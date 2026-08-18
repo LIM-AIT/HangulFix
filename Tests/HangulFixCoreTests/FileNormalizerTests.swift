@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import HangulFixCore
 
@@ -94,15 +95,22 @@ final class FileNormalizerTests: XCTestCase {
         defer { try? fileManager.removeItem(at: root) }
 
         let nfc = "이미_정상.txt".precomposedStringWithCanonicalMapping
-        let fileURL = root.appendingPathComponent(nfc)
+        let filePath = rawChildPath(parentPath: root.path, leafName: nfc)
+        let fileURL = URL(fileURLWithPath: filePath)
         let payload = Data("keep-me".utf8)
-        try payload.write(to: fileURL)
 
-        let before = try fileManager.attributesOfItem(atPath: fileURL.path)
+        // Foundation URL-based file creation can decompose a filename on macOS.
+        // Create the directory entry through POSIX so this test genuinely starts
+        // with NFC UTF-8 bytes on disk.
+        try writeExactFile(payload, to: filePath)
+        XCTAssertTrue(try exactNameExists(nfc, in: root))
+
+        let before = try fileManager.attributesOfItem(atPath: filePath)
         let candidates = try FileNormalizer().scan(urls: [root])
-        let after = try fileManager.attributesOfItem(atPath: fileURL.path)
+        let after = try fileManager.attributesOfItem(atPath: filePath)
 
         XCTAssertTrue(candidates.isEmpty)
+        XCTAssertTrue(try exactNameExists(nfc, in: root))
         XCTAssertEqual(try Data(contentsOf: fileURL), payload)
         XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
     }
@@ -160,5 +168,60 @@ final class FileNormalizerTests: XCTestCase {
         try fileManager.contentsOfDirectory(atPath: directory.path).contains { name in
             name.utf8.elementsEqual(expectedName.utf8)
         }
+    }
+
+    private func rawChildPath(parentPath: String, leafName: String) -> String {
+        parentPath == "/" ? "/" + leafName : parentPath + "/" + leafName
+    }
+
+    private func writeExactFile(_ data: Data, to path: String) throws {
+        let descriptor = path.withCString { pointer in
+            Darwin.creat(pointer, mode_t(S_IRUSR | S_IWUSR))
+        }
+
+        guard descriptor >= 0 else {
+            throw posixError(path: path)
+        }
+        defer { Darwin.close(descriptor) }
+
+        try data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return }
+
+            var totalWritten = 0
+            while totalWritten < rawBuffer.count {
+                let written = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: totalWritten),
+                    rawBuffer.count - totalWritten
+                )
+
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw posixError(path: path)
+                }
+
+                guard written > 0 else {
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(EIO),
+                        userInfo: [NSFilePathErrorKey: path]
+                    )
+                }
+
+                totalWritten += written
+            }
+        }
+    }
+
+    private func posixError(path: String) -> NSError {
+        let code = errno
+        return NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [
+                NSFilePathErrorKey: path,
+                NSLocalizedDescriptionKey: String(cString: strerror(code))
+            ]
+        )
     }
 }
