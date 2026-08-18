@@ -92,19 +92,21 @@ final class HangulFixViewModel: ObservableObject {
         Task {
             do {
                 let scanResult = try await Task.detached(priority: .userInitiated) {
-                    let renameCandidates = try FileNormalizer().scan(urls: roots)
-                    let windowsIssues = try WindowsCompatibilityValidator().scan(urls: roots)
-                    return (renameCandidates, windowsIssues)
+                    let resolvedRoots = try roots.map { try FileSystemEntryResolver.resolve($0) }
+                    let renameCandidates = try FileNormalizer().scan(urls: resolvedRoots)
+                    let windowsIssues = try WindowsCompatibilityValidator().scan(urls: resolvedRoots)
+                    return (resolvedRoots, renameCandidates, windowsIssues)
                 }.value
 
-                candidates = scanResult.0
-                windowsCompatibilityIssues = scanResult.1
+                selectedURLs = scanResult.0
+                candidates = scanResult.1
+                windowsCompatibilityIssues = scanResult.2
 
-                let blocked = scanResult.0.filter(\.isBlocked).count
-                let windowsIssueCount = scanResult.1.count
+                let blocked = scanResult.1.filter(\.isBlocked).count
+                let windowsIssueCount = scanResult.2.count
 
-                if scanResult.0.isEmpty {
-                    archiveSourcePath = singleRootPath(from: roots)
+                if scanResult.1.isEmpty {
+                    archiveSourcePath = singleRootPath(from: scanResult.0)
 
                     if windowsIssueCount > 0 {
                         statusText = "NFC 변환 대상은 없지만 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다. ZIP 저장은 차단됩니다."
@@ -114,11 +116,11 @@ final class HangulFixViewModel: ObservableObject {
                         statusText = "변환할 파일명이 없습니다. 이미 NFC이며 Windows 파일명 검사도 통과했습니다."
                     }
                 } else if blocked > 0 {
-                    statusText = "\(scanResult.0.count)개 중 \(blocked)개에서 이름 충돌이 발견되었습니다."
+                    statusText = "\(scanResult.1.count)개 중 \(blocked)개에서 이름 충돌이 발견되었습니다."
                 } else if windowsIssueCount > 0 {
-                    statusText = "NFC 변환 대상 \(scanResult.0.count)개와 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다."
+                    statusText = "NFC 변환 대상 \(scanResult.1.count)개와 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다."
                 } else {
-                    statusText = "\(scanResult.0.count)개의 이름을 Windows 호환 NFC로 변환할 수 있으며 Windows 파일명 검사도 통과했습니다."
+                    statusText = "\(scanResult.1.count)개의 이름을 Windows 호환 NFC로 변환할 수 있으며 Windows 파일명 검사도 통과했습니다."
                 }
             } catch {
                 candidates = []
@@ -187,8 +189,9 @@ final class HangulFixViewModel: ObservableObject {
         Task {
             do {
                 let verification = try await Task.detached(priority: .userInitiated) {
-                    try ZipArchiveService().createVerifiedArchive(
-                        sourcePath: sourcePath,
+                    let resolvedSourcePath = try FileSystemEntryResolver.resolvePath(sourcePath)
+                    return try ZipArchiveService().createVerifiedArchive(
+                        sourcePath: resolvedSourcePath,
                         destinationURL: destinationURL
                     )
                 }.value
@@ -244,7 +247,7 @@ final class HangulFixViewModel: ObservableObject {
 
     private func singleRootPath(from roots: [URL]) -> String? {
         guard roots.count == 1 else { return nil }
-        return roots[0].standardizedFileURL.path
+        return roots[0].path
     }
 
     private func resolvedConvertedRootPath(
@@ -253,11 +256,11 @@ final class HangulFixViewModel: ObservableObject {
     ) -> String? {
         guard roots.count == 1 else { return nil }
 
-        let rootPath = roots[0].standardizedFileURL.path
+        let rootPath = roots[0].path
         let rootKey = Data(rootPath.utf8)
 
         guard let rootCandidate = candidates.first(where: {
-            Data($0.sourceURL.standardizedFileURL.path.utf8) == rootKey
+            Data($0.sourceURL.path.utf8) == rootKey
         }) else {
             return rootPath
         }
