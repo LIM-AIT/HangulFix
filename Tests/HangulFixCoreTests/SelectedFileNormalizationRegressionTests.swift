@@ -18,7 +18,7 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         let nfdPath = rawChildPath(parentPath: root.path, leafName: nfd)
         let nfcAliasPath = rawChildPath(parentPath: root.path, leafName: nfc)
         try writeExactFile(Data("xlsx-fixture".utf8), to: nfdPath)
-        XCTAssertTrue(try exactNameExists(nfd, in: root))
+        XCTAssertTrue(try exactNameExists(nfd, inPath: root.path))
 
         guard pathExists(nfcAliasPath) else {
             throw XCTSkip("The test filesystem does not resolve canonical Unicode aliases like APFS.")
@@ -40,12 +40,12 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         let result = normalizer.execute(initialCandidates)
         XCTAssertTrue(result.failures.isEmpty, result.failures.map(\.message).joined(separator: "\n"))
         XCTAssertEqual(result.succeeded.count, 1)
-        XCTAssertTrue(try exactNameExists(nfc, in: root))
-        XCTAssertFalse(try exactNameExists(nfd, in: root))
+        XCTAssertTrue(try exactNameExists(nfc, inPath: root.path))
+        XCTAssertFalse(try exactNameExists(nfd, inPath: root.path))
 
         // The exact behavior reported on the real Mac: selecting the same file again
-        // may arrive through the old NFD alias. The scanner must inspect the directory
-        // entry currently stored on disk and return zero candidates.
+        // may arrive through the old NFD alias. The scanner must inspect the raw
+        // directory entry currently stored on disk and return zero candidates.
         guard pathExists(nfdPath) else {
             throw XCTSkip("The test filesystem does not preserve canonical aliases after rename.")
         }
@@ -58,7 +58,7 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         )
 
         let actualPath = try FileSystemEntryResolver.resolvePath(nfdPath)
-        XCTAssertTrue(((actualPath as NSString).lastPathComponent).utf8.elementsEqual(nfc.utf8))
+        XCTAssertTrue(rawLeafName(actualPath).utf8.elementsEqual(nfc.utf8))
 
         let zipURL = root.appendingPathComponent("attachment.zip")
         let verification = try ZipArchiveService().createVerifiedArchive(
@@ -75,8 +75,13 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         parentPath == "/" ? "/" + leafName : parentPath + "/" + leafName
     }
 
-    private func exactNameExists(_ expectedName: String, in directory: URL) throws -> Bool {
-        try fileManager.contentsOfDirectory(atPath: directory.path).contains { name in
+    private func rawLeafName(_ path: String) -> String {
+        guard let slash = path.lastIndex(of: "/") else { return path }
+        return String(path[path.index(after: slash)...])
+    }
+
+    private func exactNameExists(_ expectedName: String, inPath directoryPath: String) throws -> Bool {
+        try FileSystemEntryResolver.storedNames(in: directoryPath).contains { name in
             name.utf8.elementsEqual(expectedName.utf8)
         }
     }
