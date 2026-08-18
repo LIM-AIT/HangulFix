@@ -1,30 +1,33 @@
 # HangulFix
 
-macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Windows 호환 NFC 형태로 변환하는 네이티브 유틸리티입니다.
+macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Windows 호환 NFC 형태로 변환하고, Windows에서 문제될 파일명과 ZIP 내부 이름까지 검증하는 네이티브 macOS 유틸리티입니다.
 
 ## 현재 기능
 
-- 파일 및 폴더 선택
-- Finder Drag & Drop
+- 파일/폴더 선택 및 Finder Drag & Drop
 - 하위 폴더 재귀 탐색
 - Unicode NFD → NFC 변환
 - 변경 대상 미리보기
 - 동일 이름 충돌 감지
-- 하위 항목부터 안전하게 rename
-- APFS의 normalization-insensitive 동작 대응
-- 변환 후 실제 디렉터리 엔트리가 NFC UTF-8 바이트로 저장됐는지 검증
-- 런타임 오류 발생 시 이전 변경을 역순으로 자동 rollback
-- 마지막 성공 변환을 원래 파일명으로 실행 취소(Undo)
-- 변환 완료 또는 이미 NFC인 단일 파일/폴더를 Windows용 ZIP으로 저장
-- ZIP central directory의 모든 entry 이름을 UTF-8 NFC 바이트로 재검증
-- ZIP 생성 중 문제가 있으면 최종 ZIP을 교체하지 않고 실패 처리
-- Windows용 ZIP에서 `__MACOSX` 메타데이터 entry 제외
-- 파일 내용은 수정하지 않고 이름만 변경
-- broken symbolic link도 링크 자체의 이름만 안전하게 변환
-- 패키지(`.app` 등) 내부는 기본적으로 재귀 탐색하지 않음
-- 로컬 `.app` 번들 생성 및 ad-hoc codesign
-- CI에서 검증된 `.app` ZIP과 SHA-256 checksum 생성
-- 실제 APFS 사용 흐름을 위한 재현 가능한 E2E fixture 생성/검증
+- APFS normalization-insensitive 동작 대응
+- 실제 디렉터리 entry의 NFC UTF-8 바이트 저장 여부 재검증
+- 런타임 오류 시 이전 변경 자동 rollback
+- 마지막 성공 변환 Undo (`⌘Z`)
+- Windows 파일명 사전 검사
+  - 금지 문자: `< > : " / \\ | ? *`
+  - U+0000~U+001F 제어 문자
+  - 파일명 끝의 공백/마침표
+  - 예약 장치 이름: `CON`, `PRN`, `AUX`, `NUL`, `COM1`~`COM9`, `LPT1`~`LPT9` 등
+- Windows 비호환 이름이 있으면 앱에서 경고하고 ZIP 저장 차단
+- 단일 파일/폴더를 Windows용 ZIP으로 저장
+- ZIP central directory의 UTF-8/NFC filename bytes 재검증
+- ZIP 내부 Windows 파일명 규칙 재검증
+- ZIP local/central header의 UTF-8 filename flag 정합성 보정
+- `__MACOSX` 및 위험한 ZIP 경로 차단
+- broken symbolic link는 링크 대상이 아닌 링크 이름만 처리
+- `.app` 같은 패키지 내부는 기본적으로 재귀 탐색하지 않음
+- Release `.app` 생성, ad-hoc codesign, CI package/checksum 생성
+- 실제 APFS용 E2E fixture 생성/검증
 
 ## 요구 사항
 
@@ -32,7 +35,7 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - Xcode 15.3 이상 또는 Swift 5.10 이상
 - E2E fixture 도구 사용 시 Python 3
 
-## 가장 빠르게 실행하기
+## 실행
 
 ```bash
 git clone https://github.com/LIM-AIT/HangulFix.git
@@ -43,7 +46,7 @@ make run
 이미 clone한 경우:
 
 ```bash
-cd HangulFix
+cd ~/Downloads/HangulFix
 git pull --ff-only
 make run
 ```
@@ -55,41 +58,15 @@ make app
 open dist/HangulFix.app
 ```
 
-`make app`은 Release 빌드 후 `dist/HangulFix.app`을 생성하고 로컬 사용을 위해 ad-hoc codesign을 적용합니다.
+`make app`은 Release 빌드 후 `dist/HangulFix.app`을 생성하고 로컬 사용을 위한 ad-hoc codesign을 적용합니다.
 
-## 실행 취소(Undo)
-
-변환이 모두 성공한 직후에는 앱 하단의 **실행 취소** 버튼 또는 `⌘Z`로 마지막 변환을 원래 파일명 바이트로 복원할 수 있습니다.
-
-Undo도 단순 역 rename이 아니라 중첩 폴더를 고려해 부모부터 복원합니다. 실행 취소 중 오류가 나면 이미 복원한 항목을 다시 NFC 상태로 재적용해 부분 복원 상태를 최소화합니다.
-
-앱을 종료하거나 새 파일/폴더를 선택해 다른 작업을 시작하면 마지막 Undo 기록은 초기화됩니다.
-
-## Windows용 ZIP 저장
-
-단일 파일 또는 폴더를 선택했을 때 모든 이름이 이미 NFC이거나 HangulFix 변환이 성공하면 **ZIP으로 저장** 버튼을 사용할 수 있습니다.
-
-ZIP은 다음 순서로 생성합니다.
-
-1. 압축 대상 전체에 NFD 이름이 남아 있지 않은지 재검사
-2. 임시 ZIP 생성
-3. ZIP central directory를 직접 읽어 모든 entry 이름이 유효한 UTF-8인지 확인
-4. 비 ASCII 이름에 UTF-8 플래그가 있는지 확인
-5. 실제 filename bytes가 NFC와 정확히 일치하는지 확인
-6. `__MACOSX` 및 위험한 절대/상위 경로 entry가 없는지 확인
-7. 모든 검증이 통과한 경우에만 임시 ZIP을 최종 저장 경로로 atomic rename
-
-따라서 ZIP 생성이나 검증이 실패하면 기존 최종 ZIP을 중간 상태의 파일로 덮어쓰지 않습니다.
-
-현재 앱 내 ZIP 저장은 한 번에 **단일 선택 루트**를 대상으로 합니다. 그 루트 아래의 파일/하위 폴더는 모두 포함됩니다.
-
-## 전체 로컬 검증
-
-배포 전에 아래 한 명령으로 unit test, Release build, `.app` 생성, 실행 파일 존재 여부, codesign 검증까지 수행합니다.
+## 전체 검증
 
 ```bash
 make verify
 ```
+
+위 명령으로 unit test, Release build, `.app` 생성, 실행 파일 확인, codesign 검증을 수행합니다.
 
 배포용 앱 ZIP과 SHA-256 checksum까지 만들려면:
 
@@ -104,9 +81,39 @@ dist/HangulFix-macOS.zip
 dist/HangulFix-macOS.zip.sha256
 ```
 
-## 실제 파일시스템 E2E 테스트
+## 실행 취소(Undo)
 
-실제 macOS 파일시스템에서 다양한 NFD/NFC 혼합 케이스를 한 번에 재현할 수 있습니다.
+변환 성공 직후 앱 하단의 **실행 취소** 또는 `⌘Z`로 마지막 배치를 원래 filename bytes로 복원할 수 있습니다.
+
+중첩 폴더는 부모부터 복원하고, Undo 도중 실패하면 이미 복원한 항목을 다시 NFC 상태로 재적용해 부분 Undo 상태를 최소화합니다. 앱을 종료하거나 새 작업을 시작하면 Undo 기록은 초기화됩니다.
+
+## Windows 파일명 사전 검사
+
+HangulFix는 NFC 여부와 별도로 실제 Windows 파일명 규칙을 검사합니다.
+
+Windows 비호환 이름이 발견되어도 NFC 변환 자체는 수행할 수 있지만, 해당 이름을 수정하기 전까지 **Windows용 ZIP 저장은 비활성화**됩니다. 따라서 Unicode 정규화 문제와 Windows 파일명 규칙 문제를 서로 섞지 않고 독립적으로 확인할 수 있습니다.
+
+예약 장치 이름은 대소문자를 구분하지 않고 확장자가 붙어도 차단합니다. 예: `CON`, `con.txt`, `COM1.log`, `LPT9.zip`.
+
+## Windows용 ZIP 저장
+
+한 개의 파일 또는 폴더를 선택했을 때 모든 이름이 NFC이고 Windows 파일명 검사도 통과하면 **ZIP으로 저장**을 사용할 수 있습니다.
+
+ZIP 생성 절차:
+
+1. 원본 트리에 NFD 이름이 남아 있지 않은지 재검사
+2. 원본 트리에 Windows 비호환 이름이 없는지 재검사
+3. 임시 ZIP 생성
+4. ZIP central directory 파싱
+5. local/central filename UTF-8 flag 정합성 보정
+6. 모든 entry의 유효 UTF-8 및 정확한 NFC bytes 확인
+7. 모든 path component에 Windows 파일명 규칙 재적용
+8. `__MACOSX`, 절대 경로, 상위 경로 entry 차단
+9. 모든 검증 통과 후에만 최종 ZIP으로 atomic rename
+
+따라서 생성 또는 검증이 실패하면 중간 상태 ZIP을 최종 결과로 남기지 않습니다.
+
+## 실제 파일시스템 E2E 테스트
 
 ```bash
 make e2e-create
@@ -118,78 +125,56 @@ make e2e-create
 ~/Desktop/HangulFix-E2E-Test
 ```
 
-fixture에는 단일/중첩 한글 파일·폴더, 128개 배치 파일, 숨김 파일, 빈 파일, 1 MiB 바이너리 파일, emoji/악센트 혼합 이름, 이미 NFC인 파일, 정상/끊어진 symbolic link, `.app` 패키지 내부 제외 케이스가 포함됩니다. 총 148개 항목을 추적하고 실제 rename 후보는 141개입니다.
+fixture에는 단일/중첩 한글 파일·폴더, 128개 배치 파일, 숨김/빈/바이너리 파일, emoji/악센트 이름, 이미 NFC인 파일, symbolic link, 패키지 제외 케이스가 포함됩니다.
 
-`HangulFix-E2E-Test` 폴더를 HangulFix에 드롭해 변환한 뒤:
+앱에서 fixture를 NFC 변환한 뒤:
 
 ```bash
 make e2e-check
 ```
 
-검증기는 아래를 확인합니다.
+검증 항목:
 
-- 각 파일/폴더명의 실제 UTF-8 바이트가 정확한 NFC인지
-- 파일 내용 SHA-256과 크기가 변하지 않았는지
-- 이미 NFC였던 파일의 inode가 유지됐는지
-- symbolic link 대상이 그대로인지
-- `.hangulfix-*` 임시 파일이 남지 않았는지
-- `.app` 패키지 내부 NFD 파일이 의도대로 건드려지지 않았는지
-
-이미 같은 이름의 fixture 폴더가 있으면 `make e2e-create`는 덮어쓰지 않고 중단합니다.
-
-다른 경로를 쓰려면:
-
-```bash
-make e2e-create E2E_DIR=/원하는/경로
-make e2e-check E2E_DIR=/원하는/경로
-```
+- 실제 filename UTF-8 bytes가 정확한 NFC인지
+- 파일 SHA-256/크기 보존
+- 기존 NFC 파일 inode 보존
+- symbolic link target 보존
+- `.hangulfix-*` 임시 파일 미잔존
+- `.app` 내부 미변경
 
 ## 안전 설계
 
-Swift의 `String ==`는 Unicode canonical equivalence를 적용하므로 NFD/NFC 문자열을 동일하게 판단할 수 있습니다. HangulFix는 파일명과 경로를 실제 UTF-8 바이트 기준으로 비교합니다.
+Swift `String ==`는 canonical equivalence를 적용하므로 NFD/NFC 문자열을 동일하게 볼 수 있습니다. HangulFix는 filename/path를 실제 UTF-8 bytes 기준으로 비교합니다.
 
-APFS에서는 NFD 경로와 NFC 경로가 같은 파일을 가리킬 수 있습니다. HangulFix는 이런 경우 같은 디렉터리의 ASCII 임시 이름을 거쳐 POSIX `rename()`으로 NFC 이름을 기록합니다.
+APFS에서는 NFD와 NFC 경로가 같은 inode를 가리킬 수 있으므로 같은 디렉터리의 ASCII 임시 이름을 거쳐 POSIX `rename()`으로 최종 NFC bytes를 기록합니다. rename 성공만 믿지 않고 디렉터리를 다시 읽어 최종 이름을 검증합니다.
 
-rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리를 다시 읽어 최종 파일명의 UTF-8 바이트가 정확한 NFC인지 확인합니다.
-
-배치 실행 전에 충돌을 다시 확인하고, 실행 도중 파일이 사라지거나 권한/파일시스템 오류가 발생하면 이후 항목 처리를 중단합니다. 이미 변환된 항목은 역순으로 원래 이름에 rollback하여 중첩 폴더에서도 가능한 한 부분 변환 상태를 남기지 않습니다. 롤백 자체가 실패한 경우 해당 항목을 실패 목록에 명시적으로 표시합니다.
-
-Undo는 마지막 성공 배치의 후보 목록을 메모리에만 유지하고, 부모 디렉터리부터 원래 이름으로 복원합니다. Undo가 중간에 실패하면 이미 복원한 항목을 변환 순서대로 재적용해 가능한 한 변환 완료 상태로 되돌립니다.
-
-Windows용 ZIP은 원본 이름 검증과 archive central-directory 검증을 둘 다 통과해야 성공 처리합니다.
+배치 중 오류가 발생하면 이후 처리를 중단하고 이미 변환한 항목을 역순 rollback합니다. ZIP도 원본 preflight와 archive postflight를 모두 통과해야 성공으로 처리합니다.
 
 ## 자동 테스트
 
-GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
+GitHub Actions에서 다음을 검증합니다.
 
-- Unicode NFD/NFC 판별
-- 실제 APFS/macOS 디렉터리 엔트리 NFC 저장
-- 파일 내용 보존
-- NFD 폴더 → 하위 NFD 폴더 → NFD 파일 재귀 변환
-- 이미 NFC인 파일 미변경
-- 중복/겹치는 선택 항목 dedup
-- 64개 파일 일괄 변환
-- 실행 전 blocked 항목이 있으면 전체 미변경
-- 런타임 실패 시 이전 성공 rename 자동 rollback
-- 마지막 성공 변환 단일 파일 Undo 및 inode/내용 보존
-- 중첩 폴더 전체 Undo 순서 검증
-- broken symbolic link 이름 변환 및 링크 대상 보존
-- `.app` 패키지 내부 탐색 제외
-- NFC 변환 후 Windows용 ZIP 생성
-- ZIP central-directory UTF-8/NFC 검증
-- ZIP round-trip 추출 후 이름 및 파일 내용 보존
-- NFD가 남은 source의 ZIP 생성 차단
-- Release build
-- `.app` 번들 생성 및 codesign 검증
-- E2E fixture generator 문법 및 생성 검증
-- 검증된 앱 ZIP 및 SHA-256 checksum 생성
+- Unicode NFD/NFC 판별 및 실제 APFS 저장
+- 파일 내용/inode 보존
+- 중첩 폴더 및 대량 변환
+- 충돌 preflight 및 runtime rollback
+- Undo 및 중첩 Undo 순서
+- broken symbolic link
+- package 내부 제외
+- Windows 금지 문자/제어 문자/끝 공백·마침표/예약 이름 검사
+- 재귀 Windows 호환성 scan
+- Windows 비호환 source의 ZIP 생성 차단
+- 기존 ZIP central directory의 Windows 비호환 entry 차단
+- Windows용 ZIP 생성 및 UTF-8/NFC 검증
+- ZIP round-trip
+- Release build / codesign / package
 
 ## 개발 상태
 
-현재 버전: **0.6.0 verified ZIP pass**
+현재 버전: **0.7.0 Windows filename safety pass**
 
 다음 단계:
 
-- Windows 금지 문자/예약 이름 사전 검사
 - 앱 아이콘 및 배포 UX
+- 서명/공증(Notarization) 배포 설계
 - 자동 감시 폴더
