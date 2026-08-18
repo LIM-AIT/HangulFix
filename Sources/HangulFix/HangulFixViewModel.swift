@@ -92,13 +92,17 @@ final class HangulFixViewModel: ObservableObject {
         Task {
             do {
                 let scanResult = try await Task.detached(priority: .userInitiated) {
-                    let resolvedRoots = try roots.map { try FileSystemEntryResolver.resolve($0) }
-                    let renameCandidates = try FileNormalizer().scan(urls: resolvedRoots)
-                    let windowsIssues = try WindowsCompatibilityValidator().scan(urls: resolvedRoots)
-                    return (resolvedRoots, renameCandidates, windowsIssues)
+                    // Keep the NFC decision on exact directory-entry path strings.
+                    // Converting those strings back to Foundation URL objects can
+                    // reintroduce a canonically equivalent spelling on macOS.
+                    let resolvedRootPaths = try roots.map {
+                        try FileSystemEntryResolver.resolvePath($0.path)
+                    }
+                    let renameCandidates = try FileNormalizer().scan(paths: resolvedRootPaths)
+                    let windowsIssues = try WindowsCompatibilityValidator().scan(urls: roots)
+                    return (resolvedRootPaths, renameCandidates, windowsIssues)
                 }.value
 
-                selectedURLs = scanResult.0
                 candidates = scanResult.1
                 windowsCompatibilityIssues = scanResult.2
 
@@ -106,7 +110,7 @@ final class HangulFixViewModel: ObservableObject {
                 let windowsIssueCount = scanResult.2.count
 
                 if scanResult.1.isEmpty {
-                    archiveSourcePath = singleRootPath(from: scanResult.0)
+                    archiveSourcePath = scanResult.0.count == 1 ? scanResult.0[0] : nil
 
                     if windowsIssueCount > 0 {
                         statusText = "NFC 변환 대상은 없지만 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다. ZIP 저장은 차단됩니다."
@@ -153,10 +157,12 @@ final class HangulFixViewModel: ObservableObject {
             if result.failures.isEmpty {
                 lastSucceededCandidates = result.succeeded
                 lastSuccessCount = result.succeeded.count
-                archiveSourcePath = resolvedConvertedRootPath(
-                    roots: roots,
-                    candidates: items
-                )
+
+                if roots.count == 1 {
+                    archiveSourcePath = try? FileSystemEntryResolver.resolvePath(roots[0].path)
+                } else {
+                    archiveSourcePath = nil
+                }
 
                 if !windowsCompatibilityIssues.isEmpty {
                     statusText = "NFC 변환 완료: \(result.succeeded.count)개를 확인했습니다. Windows 비호환 이름 \(windowsCompatibilityIssues.count)개가 있어 ZIP 저장은 차단됩니다."
@@ -243,32 +249,6 @@ final class HangulFixViewModel: ObservableObject {
 
             isBusy = false
         }
-    }
-
-    private func singleRootPath(from roots: [URL]) -> String? {
-        guard roots.count == 1 else { return nil }
-        return roots[0].path
-    }
-
-    private func resolvedConvertedRootPath(
-        roots: [URL],
-        candidates: [RenameCandidate]
-    ) -> String? {
-        guard roots.count == 1 else { return nil }
-
-        let rootPath = roots[0].path
-        let rootKey = Data(rootPath.utf8)
-
-        guard let rootCandidate = candidates.first(where: {
-            Data($0.sourceURL.path.utf8) == rootKey
-        }) else {
-            return rootPath
-        }
-
-        let parentPath = rootCandidate.sourceURL.deletingLastPathComponent().path
-        return parentPath == "/"
-            ? "/" + rootCandidate.targetName
-            : parentPath + "/" + rootCandidate.targetName
     }
 
     private func resetLastOperationState(clearWindowsIssues: Bool = true) {
