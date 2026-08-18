@@ -1,10 +1,10 @@
 import Darwin
 import Foundation
 
-/// Resolves a file URL/path to the spelling that is actually stored in its parent
-/// directory. This matters on APFS because canonically equivalent NFD/NFC path
-/// strings can resolve to the same filesystem object even when only one byte
-/// spelling is stored in the directory entry.
+/// Resolves a file URL/path to the exact Unicode spelling stored in its parent
+/// directory. Foundation file URL/path APIs on macOS may present canonically
+/// equivalent decomposed strings even when the APFS directory entry is stored as NFC,
+/// so directory-entry names are read through POSIX `readdir(3)` instead.
 public enum FileSystemEntryResolver {
     public static func resolve(_ url: URL) throws -> URL {
         let resolvedPath = try resolvePath(url.path)
@@ -18,12 +18,6 @@ public enum FileSystemEntryResolver {
         }
 
         let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
-
-        // Use Foundation's file-system-representation initializer rather than
-        // `URL(fileURLWithPath:)`. The latter can present a canonically equivalent
-        // path spelling on macOS. Here the exact directory-entry spelling returned
-        // by `resolvePath` must survive the String -> URL round trip because the NFC
-        // scanner compares filename UTF-8 bytes.
         return resolvedPath.withCString { pointer in
             NSURL(
                 fileURLWithFileSystemRepresentation: pointer,
@@ -50,7 +44,7 @@ public enum FileSystemEntryResolver {
             : nsPath.deletingLastPathComponent
         let parentPath = try resolvePath(unresolvedParentPath)
         let requestedName = nsPath.lastPathComponent
-        let names = try FileManager.default.contentsOfDirectory(atPath: parentPath)
+        let names = try storedNames(in: parentPath)
 
         var inodeMatches: [String] = []
         for name in names {
@@ -80,6 +74,42 @@ public enum FileSystemEntryResolver {
         }
 
         throw FileSystemEntryResolverError.cannotResolveStoredName(path)
+    }
+
+    /// Returns directory entry names from `readdir(3)` without passing them through
+    /// Foundation. For valid macOS filenames, converting the returned UTF-8 C string
+    /// to Swift preserves the original UTF-8 code-unit sequence, which lets callers
+    /// distinguish NFC from NFD by bytes.
+    static func storedNames(in directoryPath: String) throws -> [String] {
+        guard let directory = directoryPath.withCString({ Darwin.opendir($0) }) else {
+            throw posixError(path: directoryPath)
+        }
+        defer { Darwin.closedir(directory) }
+
+        var names: [String] = []
+
+        while true {
+            errno = 0
+            guard let entry = Darwin.readdir(directory) else {
+                if errno != 0 {
+                    throw posixError(path: directoryPath)
+                }
+                break
+            }
+
+            var nameStorage = entry.pointee.d_name
+            let capacity = MemoryLayout.size(ofValue: nameStorage)
+            let name = withUnsafePointer(to: &nameStorage) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                    String(cString: $0)
+                }
+            }
+
+            guard name != ".", name != ".." else { continue }
+            names.append(name)
+        }
+
+        return names
     }
 
     private static func rawChildPath(parentPath: String, leafName: String) -> String {
