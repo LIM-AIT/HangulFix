@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import HangulFixMail
@@ -118,8 +119,47 @@ final class MicrosoftGraphMailServiceTests: XCTestCase {
         let name = rawName.precomposedStringWithCanonicalMapping
         let path = root.path + "/" + name
         let data = Data("graph-mail-fixture".utf8)
-        try data.write(to: URL(fileURLWithPath: path))
+        try writeExactFile(data, to: path)
         return (root, path, name, Int64(data.count))
+    }
+
+    private func writeExactFile(_ data: Data, to path: String) throws {
+        let descriptor = path.withCString { pointer in
+            Darwin.creat(pointer, mode_t(S_IRUSR | S_IWUSR))
+        }
+        guard descriptor >= 0 else {
+            throw posixError(path: path)
+        }
+        defer { Darwin.close(descriptor) }
+
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var total = 0
+            while total < rawBuffer.count {
+                let written = Darwin.write(
+                    descriptor,
+                    base.advanced(by: total),
+                    rawBuffer.count - total
+                )
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw posixError(path: path)
+                }
+                guard written > 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+                total += written
+            }
+        }
+    }
+
+    private func posixError(path: String) -> NSError {
+        let code = errno
+        return NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSFilePathErrorKey: path]
+        )
     }
 }
 
