@@ -35,7 +35,7 @@ final class WindowsZipSafetyTests: XCTestCase {
 
         let source = workspace.appendingPathComponent("SafeRoot", isDirectory: true)
         try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
-        try Data("forbidden".utf8).write(to: source.appendingPathComponent("보고서?.txt"))
+        try Data("forbidden".utf8).write(to: source.appendingPathComponent("report?.txt"))
 
         let destination = workspace.appendingPathComponent("blocked.zip")
 
@@ -48,7 +48,7 @@ final class WindowsZipSafetyTests: XCTestCase {
             guard case ZipArchiveError.sourceContainsWindowsIncompatible(let path, let reason) = error else {
                 return XCTFail("Unexpected error: \(error)")
             }
-            XCTAssertTrue(path.contains("보고서?.txt"))
+            XCTAssertTrue(path.contains("report?.txt"))
             XCTAssertTrue(reason.contains("?"))
         }
 
