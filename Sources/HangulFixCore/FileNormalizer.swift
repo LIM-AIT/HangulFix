@@ -176,7 +176,11 @@ public struct FileNormalizer {
     }
 
     private func makeCandidate(for sourceURL: URL) throws -> RenameCandidate? {
-        let sourceName = sourceURL.lastPathComponent
+        // `URL.lastPathComponent` can present a canonically normalized spelling for
+        // file URLs on macOS. Use the path string's leaf component instead so a
+        // directly selected NFD file is checked with the same bytes that ZIP preflight
+        // sees and the actual directory-entry spelling is not hidden from the scan.
+        let sourceName = (sourceURL.path as NSString).lastPathComponent
         guard Self.needsNFCNormalization(sourceName) else { return nil }
 
         let targetName = Self.normalizedNFC(sourceName)
