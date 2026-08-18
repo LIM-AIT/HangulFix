@@ -21,6 +21,11 @@ jobs:
       - name: Full verification
         run: make verify
 
+      - name: Validate E2E fixture generator
+        run: |
+          python3 -m py_compile scripts/e2e_fixture.py
+          python3 scripts/e2e_fixture.py create "$RUNNER_TEMP/HangulFix-E2E-Test"
+
       - name: Package app
         run: make package
 
