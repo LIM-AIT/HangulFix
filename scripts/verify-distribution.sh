@@ -4,19 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
 APP_PATH="$ROOT_DIR/dist/HangulFix.app"
-ZIP_PATH="$ROOT_DIR/dist/HangulFix-macOS.zip"
+ZIP_PATH="$ROOT_DIR/dist/HangulFix-$VERSION-macOS.zip"
 ZIP_SHA_PATH="$ZIP_PATH.sha256"
-DMG_PATH="$ROOT_DIR/dist/HangulFix-macOS.dmg"
+DMG_PATH="$ROOT_DIR/dist/HangulFix-$VERSION-macOS.dmg"
 DMG_SHA_PATH="$DMG_PATH.sha256"
 EXPECTED_BUNDLE_ID="com.limait.HangulFix"
-EXPECTED_VERSION="0.8.0"
+EXPECTED_VERSION="$VERSION"
 EXPECTED_ICON="HangulFix"
 
 fail() {
     echo "Distribution verification failed: $*" >&2
     exit 1
 }
+
+[[ -n "$VERSION" ]] || fail "VERSION is empty"
 
 for path in "$APP_PATH" "$ZIP_PATH" "$ZIP_SHA_PATH" "$DMG_PATH" "$DMG_SHA_PATH"; do
     [[ -e "$path" ]] || fail "missing artifact: $path"
@@ -81,4 +84,5 @@ DMG_ATTACHED=0
 
 echo ""
 echo "Distribution verification PASSED"
+echo "Version: $VERSION"
 echo "Verified: checksums, ZIP extraction, DMG mount, app metadata, icon, executable, codesign, Applications shortcut"
