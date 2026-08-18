@@ -1,4 +1,4 @@
-.PHONY: build test run icon app install verify package dmg notarize e2e-create e2e-check clean
+.PHONY: build test run icon app install verify package dist-verify dmg notarize e2e-create e2e-check clean
 
 E2E_DIR ?= $(HOME)/Desktop/HangulFix-E2E-Test
 
@@ -41,6 +41,9 @@ package: app
 	ditto -c -k --sequesterRsrc --keepParent dist/HangulFix.app dist/HangulFix-macOS.zip
 	shasum -a 256 dist/HangulFix-macOS.zip > dist/HangulFix-macOS.zip.sha256
 	./scripts/create-dmg.sh
+
+dist-verify: package
+	bash scripts/verify-distribution.sh
 
 dmg: app
 	./scripts/create-dmg.sh
