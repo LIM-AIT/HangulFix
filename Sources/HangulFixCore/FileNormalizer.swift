@@ -413,11 +413,29 @@ public struct FileNormalizer {
         return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 
-    /// Canonically equivalent path spellings can point at the same APFS entry.
-    /// Use an NFC key for de-duplication only; the stored raw path itself is kept
-    /// unchanged for normalization checks and rename execution.
+    /// Key one directory entry by the identity of its parent directory plus its
+    /// canonically normalized leaf name. This collapses aliases such as /var vs
+    /// /private/var and NFD/NFC path spellings without collapsing distinct hard-link
+    /// names that happen to reference the same inode.
     private func rawPathKey(_ path: String) -> Data {
-        Data(path.precomposedStringWithCanonicalMapping.utf8)
+        guard path != "/" else { return Data("/".utf8) }
+
+        let nsPath = path as NSString
+        let rawParent = nsPath.deletingLastPathComponent
+        let parentPath = rawParent.isEmpty ? "/" : rawParent
+        let normalizedLeaf = nsPath.lastPathComponent.precomposedStringWithCanonicalMapping
+
+        var parentInfo = stat()
+        let parentResult = parentPath.withCString { pointer in
+            Darwin.stat(pointer, &parentInfo)
+        }
+
+        if parentResult == 0 {
+            let identity = "\(parentInfo.st_dev):\(parentInfo.st_ino):\(normalizedLeaf)"
+            return Data(identity.utf8)
+        }
+
+        return Data(path.precomposedStringWithCanonicalMapping.utf8)
     }
 
     private func deduplicated(_ paths: [String]) -> [String] {
