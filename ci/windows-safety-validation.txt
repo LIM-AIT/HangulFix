@@ -1,1 +1,2 @@
 HangulFix 0.7.0 Windows filename safety validation marker.
+Re-run after NFC-safe ZIP fixture correction.
