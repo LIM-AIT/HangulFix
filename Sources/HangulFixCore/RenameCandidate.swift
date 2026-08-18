@@ -97,3 +97,24 @@ public struct RenameExecutionResult: Sendable {
         self.rolledBackCount = rolledBackCount
     }
 }
+
+public struct RenameUndoResult: Sendable {
+    /// Items that remain restored to their original names when undo returns.
+    /// A successful undo contains every requested candidate here.
+    public let undone: [RenameCandidate]
+    public let failures: [RenameFailure]
+
+    /// If undo fails after restoring earlier items, HangulFix attempts to put those
+    /// items back into the converted state. This count records successful re-applies.
+    public let reappliedCount: Int
+
+    public init(
+        undone: [RenameCandidate],
+        failures: [RenameFailure],
+        reappliedCount: Int = 0
+    ) {
+        self.undone = undone
+        self.failures = failures
+        self.reappliedCount = reappliedCount
+    }
+}

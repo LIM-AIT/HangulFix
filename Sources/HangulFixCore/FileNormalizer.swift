@@ -124,6 +124,57 @@ public struct FileNormalizer {
         return RenameExecutionResult(succeeded: succeeded, failures: [])
     }
 
+    /// Restores a previously successful conversion to the exact original filename
+    /// bytes. Parents are restored before their descendants so nested paths become
+    /// valid again. If undo fails midway, already-restored items are converted again
+    /// in the opposite order to avoid leaving a partially undone batch when possible.
+    public func undo(_ candidates: [RenameCandidate]) -> RenameUndoResult {
+        let undoOrder = candidates.sorted(by: executionOrder).reversed()
+        var undone: [RenameCandidate] = []
+
+        for candidate in undoOrder {
+            do {
+                try rollback(candidate)
+                undone.append(candidate)
+            } catch {
+                var failures = [
+                    RenameFailure(
+                        candidate: candidate,
+                        message: "실행 취소 실패: \(error.localizedDescription)"
+                    )
+                ]
+                var remainingUndone = Set(undone.map(\.id))
+                var reappliedCount = 0
+
+                // `undone` is shallowest-first. Re-applying in reverse restores the
+                // original conversion order (deepest-first), which keeps parent paths valid.
+                for previous in undone.reversed() {
+                    do {
+                        try rename(previous)
+                        remainingUndone.remove(previous.id)
+                        reappliedCount += 1
+                    } catch {
+                        failures.append(
+                            RenameFailure(
+                                candidate: previous,
+                                message: "실행 취소 복구 실패: \(error.localizedDescription)"
+                            )
+                        )
+                    }
+                }
+
+                let stillUndone = undone.filter { remainingUndone.contains($0.id) }
+                return RenameUndoResult(
+                    undone: stillUndone,
+                    failures: failures,
+                    reappliedCount: reappliedCount
+                )
+            }
+        }
+
+        return RenameUndoResult(undone: undone, failures: [])
+    }
+
     private func makeCandidate(for sourceURL: URL) throws -> RenameCandidate? {
         let sourceName = sourceURL.lastPathComponent
         guard Self.needsNFCNormalization(sourceName) else { return nil }

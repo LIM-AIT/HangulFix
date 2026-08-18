@@ -9,6 +9,9 @@ final class HangulFixViewModel: ObservableObject {
     @Published private(set) var statusText = "파일 또는 폴더를 선택하세요."
     @Published private(set) var lastFailures: [RenameFailure] = []
     @Published private(set) var lastSuccessCount = 0
+    @Published private(set) var lastUndoCount = 0
+
+    private var lastSucceededCandidates: [RenameCandidate] = []
 
     var blockedCount: Int {
         candidates.filter(\.isBlocked).count
@@ -18,11 +21,14 @@ final class HangulFixViewModel: ObservableObject {
         !isBusy && !candidates.isEmpty && blockedCount == 0
     }
 
+    var canUndo: Bool {
+        !isBusy && !lastSucceededCandidates.isEmpty && lastFailures.isEmpty
+    }
+
     func addURLs(_ urls: [URL]) {
         guard !isBusy, !urls.isEmpty else { return }
 
-        lastFailures = []
-        lastSuccessCount = 0
+        resetLastOperationState()
 
         var known = Set(selectedURLs.map { Data($0.standardizedFileURL.path.utf8) })
         for url in urls {
@@ -34,32 +40,11 @@ final class HangulFixViewModel: ObservableObject {
         refreshPreview()
     }
 
-    func replaceURLs(_ urls: [URL]) {
-        guard !isBusy, !urls.isEmpty else { return }
-
-        selectedURLs = []
-        candidates = []
-        lastFailures = []
-        lastSuccessCount = 0
-        statusText = "Finder에서 선택한 항목을 불러오는 중…"
-
-        var seen = Set<Data>()
-        for url in urls {
-            let standardized = url.standardizedFileURL
-            let key = Data(standardized.path.utf8)
-            guard seen.insert(key).inserted else { continue }
-            selectedURLs.append(standardized)
-        }
-
-        refreshPreview()
-    }
-
     func clear() {
         guard !isBusy else { return }
         selectedURLs = []
         candidates = []
-        lastFailures = []
-        lastSuccessCount = 0
+        resetLastOperationState()
         statusText = "파일 또는 폴더를 선택하세요."
     }
 
@@ -73,8 +58,7 @@ final class HangulFixViewModel: ObservableObject {
 
         let roots = selectedURLs
         isBusy = true
-        lastFailures = []
-        lastSuccessCount = 0
+        resetLastOperationState()
         statusText = "한글 파일명을 검사하는 중…"
 
         Task {
@@ -106,8 +90,7 @@ final class HangulFixViewModel: ObservableObject {
 
         let items = candidates
         isBusy = true
-        lastFailures = []
-        lastSuccessCount = 0
+        resetLastOperationState()
         statusText = "파일명을 변환하는 중…"
 
         Task {
@@ -120,6 +103,7 @@ final class HangulFixViewModel: ObservableObject {
             selectedURLs = []
 
             if result.failures.isEmpty {
+                lastSucceededCandidates = result.succeeded
                 lastSuccessCount = result.succeeded.count
                 statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다."
             } else if result.rolledBackCount > 0, result.succeeded.isEmpty {
@@ -132,5 +116,47 @@ final class HangulFixViewModel: ObservableObject {
 
             isBusy = false
         }
+    }
+
+    func undoLastConversion() {
+        guard canUndo else { return }
+
+        let items = lastSucceededCandidates
+        isBusy = true
+        lastFailures = []
+        lastUndoCount = 0
+        statusText = "마지막 변환을 원래 파일명으로 되돌리는 중…"
+
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                FileNormalizer().undo(items)
+            }.value
+
+            lastFailures = result.failures
+            lastSuccessCount = 0
+            lastSucceededCandidates = []
+            candidates = []
+            selectedURLs = []
+
+            if result.failures.isEmpty {
+                lastUndoCount = result.undone.count
+                statusText = "실행 취소 완료: \(result.undone.count)개의 이름을 변환 전 상태로 복원했습니다."
+            } else if result.reappliedCount > 0, result.undone.isEmpty {
+                statusText = "실행 취소 중 오류가 발생해 작업을 중단했고, 이미 되돌린 \(result.reappliedCount)개 항목은 다시 NFC 상태로 복구했습니다."
+            } else if result.reappliedCount > 0 {
+                statusText = "실행 취소 중 오류가 발생했습니다. 일부 항목은 원래 이름으로 남아 있을 수 있으니 실패 목록을 확인해 주세요."
+            } else {
+                statusText = "실행 취소에 실패했습니다. 실패 항목을 확인한 뒤 다시 검사해 주세요."
+            }
+
+            isBusy = false
+        }
+    }
+
+    private func resetLastOperationState() {
+        lastFailures = []
+        lastSuccessCount = 0
+        lastUndoCount = 0
+        lastSucceededCandidates = []
     }
 }
