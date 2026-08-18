@@ -4,9 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
 APP_DIR="$ROOT_DIR/dist/HangulFix.app"
-DMG_PATH="$ROOT_DIR/dist/HangulFix-macOS.dmg"
+DMG_PATH="$ROOT_DIR/dist/HangulFix-$VERSION-macOS.dmg"
 DMG_SHA_PATH="$DMG_PATH.sha256"
+
+[[ -n "$VERSION" ]] || { echo "VERSION is empty" >&2; exit 1; }
 
 if [[ ! -d "$APP_DIR" ]]; then
     "$ROOT_DIR/scripts/create-app-bundle.sh"
@@ -22,7 +25,7 @@ ln -s /Applications "$STAGE_DIR/Applications"
 
 rm -f "$DMG_PATH" "$DMG_SHA_PATH"
 hdiutil create \
-    -volname "HangulFix" \
+    -volname "HangulFix $VERSION" \
     -srcfolder "$STAGE_DIR" \
     -ov \
     -format UDZO \
