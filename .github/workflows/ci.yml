@@ -30,7 +30,7 @@ jobs:
         run: make package
 
       - name: Verify distribution artifacts
-        run: ./scripts/verify-distribution.sh
+        run: bash scripts/verify-distribution.sh
 
       - name: Upload verified app
         uses: actions/upload-artifact@v4
