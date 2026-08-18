@@ -22,9 +22,10 @@ public enum FileSystemEntryResolver {
         }
 
         let nsPath = path as NSString
-        let parentPath = nsPath.deletingLastPathComponent.isEmpty
+        let unresolvedParentPath = nsPath.deletingLastPathComponent.isEmpty
             ? "/"
             : nsPath.deletingLastPathComponent
+        let parentPath = try resolvePath(unresolvedParentPath)
         let requestedName = nsPath.lastPathComponent
         let names = try FileManager.default.contentsOfDirectory(atPath: parentPath)
 
