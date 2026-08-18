@@ -13,21 +13,13 @@ let package = Package(
         .target(
             name: "HangulFixCore"
         ),
-        .target(
-            name: "HangulFixMail",
-            dependencies: ["HangulFixCore"]
-        ),
         .executableTarget(
             name: "HangulFix",
-            dependencies: ["HangulFixCore", "HangulFixMail"]
+            dependencies: ["HangulFixCore"]
         ),
         .testTarget(
             name: "HangulFixCoreTests",
             dependencies: ["HangulFixCore"]
-        ),
-        .testTarget(
-            name: "HangulFixMailTests",
-            dependencies: ["HangulFixMail", "HangulFixCore"]
         )
     ]
 )
