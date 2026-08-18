@@ -19,11 +19,13 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - 패키지(`.app` 등) 내부는 기본적으로 재귀 탐색하지 않음
 - 로컬 `.app` 번들 생성 및 ad-hoc codesign
 - CI에서 검증된 `.app` ZIP과 SHA-256 checksum 생성
+- 실제 APFS 사용 흐름을 위한 재현 가능한 E2E fixture 생성/검증
 
 ## 요구 사항
 
 - macOS 14 Sonoma 이상
 - Xcode 15.3 이상 또는 Swift 5.10 이상
+- E2E fixture 도구 사용 시 Python 3
 
 ## 가장 빠르게 실행하기
 
@@ -71,6 +73,46 @@ dist/HangulFix-macOS.zip
 dist/HangulFix-macOS.zip.sha256
 ```
 
+## 실제 파일시스템 E2E 테스트
+
+실제 macOS 파일시스템에서 다양한 NFD/NFC 혼합 케이스를 한 번에 재현할 수 있습니다.
+
+```bash
+make e2e-create
+```
+
+기본 생성 위치:
+
+```text
+~/Desktop/HangulFix-E2E-Test
+```
+
+fixture에는 단일/중첩 한글 파일·폴더, 128개 배치 파일, 숨김 파일, 빈 파일, 1 MiB 바이너리 파일, emoji/악센트 혼합 이름, 이미 NFC인 파일, 정상/끊어진 symbolic link, `.app` 패키지 내부 제외 케이스가 포함됩니다. 총 148개 항목을 추적하고 실제 rename 후보는 141개입니다.
+
+`HangulFix-E2E-Test` 폴더를 HangulFix에 드롭해 변환한 뒤:
+
+```bash
+make e2e-check
+```
+
+검증기는 아래를 확인합니다.
+
+- 각 파일/폴더명의 실제 UTF-8 바이트가 정확한 NFC인지
+- 파일 내용 SHA-256과 크기가 변하지 않았는지
+- 이미 NFC였던 파일의 inode가 유지됐는지
+- symbolic link 대상이 그대로인지
+- `.hangulfix-*` 임시 파일이 남지 않았는지
+- `.app` 패키지 내부 NFD 파일이 의도대로 건드려지지 않았는지
+
+이미 같은 이름의 fixture 폴더가 있으면 `make e2e-create`는 덮어쓰지 않고 중단합니다.
+
+다른 경로를 쓰려면:
+
+```bash
+make e2e-create E2E_DIR=/원하는/경로
+make e2e-check E2E_DIR=/원하는/경로
+```
+
 ## 안전 설계
 
 Swift의 `String ==`는 Unicode canonical equivalence를 적용하므로 NFD/NFC 문자열을 동일하게 판단할 수 있습니다. HangulFix는 파일명과 경로를 실제 UTF-8 바이트 기준으로 비교합니다.
@@ -98,11 +140,12 @@ GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
 - `.app` 패키지 내부 탐색 제외
 - Release build
 - `.app` 번들 생성 및 codesign 검증
+- E2E fixture generator 문법 및 생성 검증
 - 검증된 앱 ZIP 및 SHA-256 checksum 생성
 
 ## 개발 상태
 
-현재 버전: **0.3.1 verification pass**
+현재 버전: **0.3.2 E2E verification pass**
 
 다음 단계:
 
