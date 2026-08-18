@@ -5,7 +5,7 @@ import XCTest
 final class SelectedFileNormalizationRegressionTests: XCTestCase {
     private let fileManager = FileManager.default
 
-    func testCanonicalAliasResolvesActualStoredNameThenConvertsAndZips() throws {
+    func testSameFileIsNotOfferedAgainAfterNFCConversion() throws {
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("HangulFixSelectedFileRegression-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -20,56 +20,49 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         try writeExactFile(Data("xlsx-fixture".utf8), to: nfdPath)
         XCTAssertTrue(try exactNameExists(nfd, in: root))
 
-        // APFS can resolve an NFC path alias to an entry whose stored bytes are NFD.
-        // This mirrors Finder/NSOpenPanel handing the app a canonically equivalent
-        // URL spelling rather than the exact directory-entry spelling.
         guard pathExists(nfcAliasPath) else {
             throw XCTSkip("The test filesystem does not resolve canonical Unicode aliases like APFS.")
         }
 
-        let selectedAliasURL = URL(fileURLWithPath: nfcAliasPath)
-        let resolvedSelection = try FileSystemEntryResolver.resolve(selectedAliasURL)
-        let resolvedSelectionName = (resolvedSelection.path as NSString).lastPathComponent
-        XCTAssertTrue(resolvedSelectionName.utf8.elementsEqual(nfd.utf8))
-
         let normalizer = FileNormalizer()
-        let candidates = try normalizer.scan(urls: [resolvedSelection])
-        XCTAssertEqual(candidates.count, 1)
-        XCTAssertTrue(candidates[0].sourceName.utf8.elementsEqual(nfd.utf8))
-        XCTAssertTrue(candidates[0].targetName.utf8.elementsEqual(nfc.utf8))
 
-        let result = normalizer.execute(candidates)
+        // Finder/NSOpenPanel may supply a canonically equivalent alias rather than
+        // the exact directory-entry spelling. scan(urls:) must resolve that alias to
+        // the actual NFD bytes before deciding whether conversion is needed.
+        let initialAliasURL = URL(fileURLWithPath: nfcAliasPath)
+        let initialCandidates = try normalizer.scan(urls: [initialAliasURL])
+        XCTAssertEqual(initialCandidates.count, 1)
+        XCTAssertTrue(initialCandidates[0].sourceName.utf8.elementsEqual(nfd.utf8))
+        XCTAssertTrue(initialCandidates[0].targetName.utf8.elementsEqual(nfc.utf8))
+        XCTAssertTrue(initialCandidates[0].sourcePath.utf8.elementsEqual(nfdPath.utf8))
+        XCTAssertTrue(initialCandidates[0].targetPath.utf8.elementsEqual(nfcAliasPath.utf8))
+
+        let result = normalizer.execute(initialCandidates)
         XCTAssertTrue(result.failures.isEmpty, result.failures.map(\.message).joined(separator: "\n"))
         XCTAssertEqual(result.succeeded.count, 1)
         XCTAssertTrue(try exactNameExists(nfc, in: root))
         XCTAssertFalse(try exactNameExists(nfd, in: root))
 
-        // Selecting the same file again after conversion is the key regression.
-        // APFS can still resolve the old NFD alias, but HangulFix must resolve that
-        // alias back to the now-stored NFC directory entry and report no candidate.
+        // The exact behavior reported on the real Mac: selecting the same file again
+        // may arrive through the old NFD alias. The scanner must inspect the directory
+        // entry currently stored on disk and return zero candidates.
         guard pathExists(nfdPath) else {
             throw XCTSkip("The test filesystem does not preserve canonical aliases after rename.")
         }
 
         let staleAliasURL = URL(fileURLWithPath: nfdPath)
-        let resolvedAgain = try FileSystemEntryResolver.resolve(staleAliasURL)
-        let resolvedAgainName = (resolvedAgain.path as NSString).lastPathComponent
-        XCTAssertTrue(resolvedAgainName.utf8.elementsEqual(nfc.utf8))
-
-        let candidatesAgain = try normalizer.scan(urls: [resolvedAgain])
+        let candidatesAgain = try normalizer.scan(urls: [staleAliasURL])
         XCTAssertTrue(
             candidatesAgain.isEmpty,
             "An already-converted NFC file must not be offered for conversion again."
         )
 
-        // ZIP must likewise resolve the stale alias to the actual NFC entry.
-        let resolvedAfterConversion = try FileSystemEntryResolver.resolvePath(nfdPath)
-        let resolvedAfterName = (resolvedAfterConversion as NSString).lastPathComponent
-        XCTAssertTrue(resolvedAfterName.utf8.elementsEqual(nfc.utf8))
+        let actualPath = try FileSystemEntryResolver.resolvePath(nfdPath)
+        XCTAssertTrue(((actualPath as NSString).lastPathComponent).utf8.elementsEqual(nfc.utf8))
 
         let zipURL = root.appendingPathComponent("attachment.zip")
         let verification = try ZipArchiveService().createVerifiedArchive(
-            sourcePath: resolvedAfterConversion,
+            sourcePath: actualPath,
             destinationURL: zipURL
         )
 
