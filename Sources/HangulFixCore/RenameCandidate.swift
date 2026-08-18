@@ -33,14 +33,46 @@ public enum RenameIssue: Sendable, Hashable {
 
 public struct RenameCandidate: Identifiable, Sendable, Hashable {
     public let id: UUID
-    public let sourceURL: URL
-    public let targetURL: URL
+
+    /// Exact path spelling used for filesystem operations. Do not derive this back
+    /// from `URL.path` on macOS: Foundation may expose a canonically equivalent
+    /// spelling that differs from the actual APFS directory-entry bytes.
+    public let sourcePath: String
+    public let targetPath: String
+
     public let sourceName: String
     public let targetName: String
     public let kind: FileItemKind
     public let depth: Int
     public let issue: RenameIssue?
 
+    /// URLs are retained for UI / Foundation interoperability only. Core rename
+    /// logic must use `sourcePath` / `targetPath` instead.
+    public var sourceURL: URL { URL(fileURLWithPath: sourcePath) }
+    public var targetURL: URL { URL(fileURLWithPath: targetPath) }
+
+    public init(
+        id: UUID = UUID(),
+        sourcePath: String,
+        targetPath: String,
+        sourceName: String,
+        targetName: String,
+        kind: FileItemKind,
+        depth: Int,
+        issue: RenameIssue? = nil
+    ) {
+        self.id = id
+        self.sourcePath = sourcePath
+        self.targetPath = targetPath
+        self.sourceName = sourceName
+        self.targetName = targetName
+        self.kind = kind
+        self.depth = depth
+        self.issue = issue
+    }
+
+    /// Compatibility initializer used by tests and callers that already have URLs.
+    /// New core code should prefer the raw-path initializer above.
     public init(
         id: UUID = UUID(),
         sourceURL: URL,
@@ -51,14 +83,16 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
         depth: Int,
         issue: RenameIssue? = nil
     ) {
-        self.id = id
-        self.sourceURL = sourceURL
-        self.targetURL = targetURL
-        self.sourceName = sourceName
-        self.targetName = targetName
-        self.kind = kind
-        self.depth = depth
-        self.issue = issue
+        self.init(
+            id: id,
+            sourcePath: sourceURL.path,
+            targetPath: targetURL.path,
+            sourceName: sourceName,
+            targetName: targetName,
+            kind: kind,
+            depth: depth,
+            issue: issue
+        )
     }
 
     public var isBlocked: Bool {
@@ -66,7 +100,8 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
     }
 
     public var parentPath: String {
-        sourceURL.deletingLastPathComponent().path
+        let parent = (sourcePath as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
     }
 }
 
