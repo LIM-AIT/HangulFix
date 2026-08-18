@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct FileNormalizer {
     private let fileManager: FileManager
@@ -124,49 +125,81 @@ public struct FileNormalizer {
 
     private func rename(_ candidate: RenameCandidate) throws {
         let sourceURL = candidate.sourceURL
-        let targetURL = sourceURL
-            .deletingLastPathComponent()
-            .appendingPathComponent(candidate.targetName)
+        let parentURL = sourceURL.deletingLastPathComponent()
+        let targetURL = parentURL.appendingPathComponent(candidate.targetName)
+        let targetPath = rawChildPath(parentURL: parentURL, leafName: candidate.targetName)
 
         if itemExists(at: targetURL) {
             guard isSameFilesystemObject(sourceURL, targetURL) else {
                 throw FileNormalizerError.destinationAlreadyExists(targetURL)
             }
 
-            // APFS is normalization-insensitive. NFC and NFD paths can therefore
-            // resolve to the same object. A temporary sibling name forces the
-            // on-disk filename representation to be rewritten safely.
-            try renameThroughTemporaryURL(sourceURL: sourceURL, targetURL: targetURL)
+            // APFS is normalization-insensitive. NFC and NFD paths may resolve to
+            // the same object, so force the directory entry through a temporary
+            // ASCII name before writing the final NFC bytes.
+            try renameThroughTemporaryPath(sourceURL: sourceURL, targetPath: targetPath)
         } else {
-            try fileManager.moveItem(at: sourceURL, to: targetURL)
+            try posixRename(from: sourceURL.path, to: targetPath)
         }
     }
 
-    private func renameThroughTemporaryURL(sourceURL: URL, targetURL: URL) throws {
-        let parent = sourceURL.deletingLastPathComponent()
-        let temporaryURL = uniqueTemporaryURL(in: parent)
+    private func renameThroughTemporaryPath(sourceURL: URL, targetPath: String) throws {
+        let parentURL = sourceURL.deletingLastPathComponent()
+        let temporaryPath = uniqueTemporaryPath(in: parentURL)
+        let originalPath = sourceURL.path
 
-        try fileManager.moveItem(at: sourceURL, to: temporaryURL)
+        try posixRename(from: originalPath, to: temporaryPath)
 
         do {
-            try fileManager.moveItem(at: temporaryURL, to: targetURL)
+            try posixRename(from: temporaryPath, to: targetPath)
         } catch {
-            // Best-effort rollback. If rollback itself fails, preserve the original
-            // error because it describes the operation the user requested.
-            try? fileManager.moveItem(at: temporaryURL, to: sourceURL)
+            // Best-effort rollback. Preserve the requested operation's error if
+            // rollback also fails.
+            try? posixRename(from: temporaryPath, to: originalPath)
             throw error
         }
     }
 
-    private func uniqueTemporaryURL(in directory: URL) -> URL {
+    /// Build the destination as a plain Swift String instead of a file URL.
+    /// Foundation file-URL/path conversion can apply filesystem normalization on
+    /// macOS; POSIX rename receives these UTF-8 bytes exactly as constructed.
+    private func rawChildPath(parentURL: URL, leafName: String) -> String {
+        let parentPath = parentURL.path
+        if parentPath == "/" {
+            return "/" + leafName
+        }
+        return parentPath + "/" + leafName
+    }
+
+    private func uniqueTemporaryPath(in directory: URL) -> String {
         while true {
-            let candidate = directory.appendingPathComponent(
-                ".hangulfix-\(UUID().uuidString)",
-                isDirectory: false
+            let candidate = rawChildPath(
+                parentURL: directory,
+                leafName: ".hangulfix-\(UUID().uuidString)"
             )
-            if !itemExists(at: candidate) {
+            if !fileManager.fileExists(atPath: candidate) {
                 return candidate
             }
+        }
+    }
+
+    private func posixRename(from sourcePath: String, to destinationPath: String) throws {
+        let result = sourcePath.withCString { sourcePointer in
+            destinationPath.withCString { destinationPointer in
+                Darwin.rename(sourcePointer, destinationPointer)
+            }
+        }
+
+        guard result == 0 else {
+            let code = errno
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(code),
+                userInfo: [
+                    NSFilePathErrorKey: destinationPath,
+                    NSLocalizedDescriptionKey: String(cString: strerror(code))
+                ]
+            )
         }
     }
 
