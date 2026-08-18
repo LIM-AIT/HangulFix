@@ -17,7 +17,8 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - 파일 내용은 수정하지 않고 이름만 변경
 - broken symbolic link도 링크 자체의 이름만 안전하게 변환
 - 패키지(`.app` 등) 내부는 기본적으로 재귀 탐색하지 않음
-- 로컬 `.app` 번들 생성
+- 로컬 `.app` 번들 생성 및 ad-hoc codesign
+- CI에서 검증된 `.app` ZIP과 SHA-256 checksum 생성
 
 ## 요구 사항
 
@@ -49,6 +50,27 @@ open dist/HangulFix.app
 
 `make app`은 Release 빌드 후 `dist/HangulFix.app`을 생성하고 로컬 사용을 위해 ad-hoc codesign을 적용합니다.
 
+## 전체 로컬 검증
+
+배포 전에 아래 한 명령으로 unit test, Release build, `.app` 생성, 실행 파일 존재 여부, codesign 검증까지 수행합니다.
+
+```bash
+make verify
+```
+
+배포용 ZIP과 SHA-256 checksum까지 만들려면:
+
+```bash
+make package
+```
+
+생성물:
+
+```text
+dist/HangulFix-macOS.zip
+dist/HangulFix-macOS.zip.sha256
+```
+
 ## 안전 설계
 
 Swift의 `String ==`는 Unicode canonical equivalence를 적용하므로 NFD/NFC 문자열을 동일하게 판단할 수 있습니다. HangulFix는 파일명과 경로를 실제 UTF-8 바이트 기준으로 비교합니다.
@@ -61,7 +83,7 @@ rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리
 
 ## 자동 테스트
 
-GitHub Actions에서 아래를 매 push마다 검증합니다.
+GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
 
 - Unicode NFD/NFC 판별
 - 실제 APFS/macOS 디렉터리 엔트리 NFC 저장
@@ -75,11 +97,12 @@ GitHub Actions에서 아래를 매 push마다 검증합니다.
 - broken symbolic link 이름 변환 및 링크 대상 보존
 - `.app` 패키지 내부 탐색 제외
 - Release build
-- `.app` 번들 생성
+- `.app` 번들 생성 및 codesign 검증
+- 검증된 앱 ZIP 및 SHA-256 checksum 생성
 
 ## 개발 상태
 
-현재 버전: **0.3.0 safety pass**
+현재 버전: **0.3.1 verification pass**
 
 다음 단계:
 

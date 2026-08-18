@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  build-test-and-package:
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -18,11 +18,18 @@ jobs:
       - name: Swift version
         run: swift --version
 
-      - name: Unit tests
-        run: swift test
+      - name: Full verification
+        run: make verify
 
-      - name: Release build
-        run: swift build -c release
+      - name: Package app
+        run: make package
 
-      - name: Build app bundle
-        run: make app
+      - name: Upload verified app
+        uses: actions/upload-artifact@v4
+        with:
+          name: HangulFix-macOS
+          path: |
+            dist/HangulFix-macOS.zip
+            dist/HangulFix-macOS.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
