@@ -12,8 +12,11 @@ struct SafeMailComposerView: View {
 
     @State private var subject = ""
     @State private var bodyText = ""
+    @State private var attachmentPaths: [String]
 
-    let attachmentPaths: [String]
+    init(initialAttachmentPaths: [String] = []) {
+        _attachmentPaths = State(initialValue: initialAttachmentPaths)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,25 +73,52 @@ struct SafeMailComposerView: View {
 
     private var attachmentSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("안전 첨부 파일", systemImage: "paperclip")
-                .font(.headline)
-
-            ForEach(attachmentPaths, id: \.self) { path in
-                HStack(spacing: 8) {
-                    Image(systemName: "doc")
-                        .foregroundStyle(.secondary)
-                    Text(rawLeafName(path))
-                        .lineLimit(1)
-                    Spacer()
-                    Text("NFC 재검증")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.secondary)
+            HStack {
+                Label("안전 첨부 파일", systemImage: "paperclip")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    chooseAttachments()
+                } label: {
+                    Label("파일 선택", systemImage: "plus")
                 }
-                .padding(9)
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isBusy)
             }
 
-            Text("초안 생성 직전에 실제 APFS 파일명, NFC 여부, Windows 파일명 규칙을 다시 검사합니다. Microsoft 365에 저장된 첨부 이름이 한 글자라도 다르면 초안을 성공으로 처리하지 않습니다.")
+            if attachmentPaths.isEmpty {
+                Text("HangulFix에서 NFC 변환이 끝난 파일을 선택하세요. 폴더는 직접 메일 첨부에서 제외됩니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                ForEach(attachmentPaths, id: \.self) { path in
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc")
+                            .foregroundStyle(.secondary)
+                        Text(rawLeafName(path))
+                            .lineLimit(1)
+                        Spacer()
+                        Text("NFC 재검증")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                        Button {
+                            attachmentPaths.removeAll { $0 == path }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(viewModel.isBusy)
+                    }
+                    .padding(9)
+                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+
+            Text("초안 생성 직전에 실제 APFS 파일명, NFC 여부, Windows 파일명 규칙을 다시 검사합니다. Microsoft 365에 저장된 첨부 이름이 한 글자라도 다르면 성공으로 처리하지 않고 검증 실패 초안은 자동 삭제합니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -285,6 +315,26 @@ struct SafeMailComposerView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+    }
+
+    private func chooseAttachments() {
+        let panel = NSOpenPanel()
+        panel.title = "Outlook에 안전하게 첨부할 파일 선택"
+        panel.prompt = "첨부"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.resolvesAliases = true
+
+        if panel.runModal() == .OK {
+            var known = Set(attachmentPaths)
+            for url in panel.urls {
+                let path = url.path
+                if known.insert(path).inserted {
+                    attachmentPaths.append(path)
+                }
+            }
+        }
     }
 
     private func rawLeafName(_ path: String) -> String {
