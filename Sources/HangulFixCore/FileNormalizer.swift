@@ -427,7 +427,7 @@ public struct FileNormalizer {
 
         var parentInfo = stat()
         let parentResult = parentPath.withCString { pointer in
-            Darwin.stat(pointer, &parentInfo)
+            Darwin.lstat(pointer, &parentInfo)
         }
 
         if parentResult == 0 {
