@@ -27,6 +27,17 @@ struct ContentView: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 520)
+        .onAppear {
+            consumeFinderServiceSelection()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FinderServiceBridge.didReceiveURLs)) { _ in
+            consumeFinderServiceSelection()
+        }
+        .onChange(of: viewModel.isBusy) { _, isBusy in
+            if !isBusy {
+                consumeFinderServiceSelection()
+            }
+        }
     }
 
     private var header: some View {
@@ -284,6 +295,14 @@ struct ContentView: View {
         }
 
         return true
+    }
+
+    private func consumeFinderServiceSelection() {
+        guard !viewModel.isBusy else { return }
+
+        let urls = FinderServiceBridge.shared.consumePendingURLs()
+        guard !urls.isEmpty else { return }
+        viewModel.replaceURLs(urls)
     }
 }
 

@@ -34,6 +34,26 @@ final class HangulFixViewModel: ObservableObject {
         refreshPreview()
     }
 
+    func replaceURLs(_ urls: [URL]) {
+        guard !isBusy, !urls.isEmpty else { return }
+
+        selectedURLs = []
+        candidates = []
+        lastFailures = []
+        lastSuccessCount = 0
+        statusText = "Finder에서 선택한 항목을 불러오는 중…"
+
+        var seen = Set<Data>()
+        for url in urls {
+            let standardized = url.standardizedFileURL
+            let key = Data(standardized.path.utf8)
+            guard seen.insert(key).inserted else { continue }
+            selectedURLs.append(standardized)
+        }
+
+        refreshPreview()
+    }
+
     func clear() {
         guard !isBusy else { return }
         selectedURLs = []
