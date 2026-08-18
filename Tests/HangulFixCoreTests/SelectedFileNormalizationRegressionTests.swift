@@ -44,12 +44,25 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         XCTAssertTrue(try exactNameExists(nfc, in: root))
         XCTAssertFalse(try exactNameExists(nfd, in: root))
 
-        // The pre-conversion NFD path can still resolve to the same file on APFS.
-        // ZIP must not reject that stale alias after the directory entry is NFC.
+        // Selecting the same file again after conversion is the key regression.
+        // APFS can still resolve the old NFD alias, but HangulFix must resolve that
+        // alias back to the now-stored NFC directory entry and report no candidate.
         guard pathExists(nfdPath) else {
             throw XCTSkip("The test filesystem does not preserve canonical aliases after rename.")
         }
 
+        let staleAliasURL = URL(fileURLWithPath: nfdPath)
+        let resolvedAgain = try FileSystemEntryResolver.resolve(staleAliasURL)
+        let resolvedAgainName = (resolvedAgain.path as NSString).lastPathComponent
+        XCTAssertTrue(resolvedAgainName.utf8.elementsEqual(nfc.utf8))
+
+        let candidatesAgain = try normalizer.scan(urls: [resolvedAgain])
+        XCTAssertTrue(
+            candidatesAgain.isEmpty,
+            "An already-converted NFC file must not be offered for conversion again."
+        )
+
+        // ZIP must likewise resolve the stale alias to the actual NFC entry.
         let resolvedAfterConversion = try FileSystemEntryResolver.resolvePath(nfdPath)
         let resolvedAfterName = (resolvedAfterConversion as NSString).lastPathComponent
         XCTAssertTrue(resolvedAfterName.utf8.elementsEqual(nfc.utf8))
