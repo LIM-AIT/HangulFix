@@ -5,6 +5,7 @@ import HangulFixCore
 final class HangulFixViewModel: ObservableObject {
     @Published private(set) var selectedURLs: [URL] = []
     @Published private(set) var candidates: [RenameCandidate] = []
+    @Published private(set) var windowsCompatibilityIssues: [WindowsCompatibilityIssue] = []
     @Published private(set) var isBusy = false
     @Published private(set) var statusText = "파일 또는 폴더를 선택하세요."
     @Published private(set) var lastFailures: [RenameFailure] = []
@@ -34,10 +35,14 @@ final class HangulFixViewModel: ObservableObject {
             && archiveSourcePath != nil
             && candidates.isEmpty
             && lastFailures.isEmpty
+            && windowsCompatibilityIssues.isEmpty
     }
 
     var hasOperationError: Bool {
-        !lastFailures.isEmpty || zipErrorText != nil || blockedCount > 0
+        !lastFailures.isEmpty
+            || zipErrorText != nil
+            || blockedCount > 0
+            || !windowsCompatibilityIssues.isEmpty
     }
 
     var suggestedZipName: String {
@@ -73,6 +78,7 @@ final class HangulFixViewModel: ObservableObject {
         guard !isBusy else { return }
         guard !selectedURLs.isEmpty else {
             candidates = []
+            windowsCompatibilityIssues = []
             archiveSourcePath = nil
             statusText = "파일 또는 폴더를 선택하세요."
             return
@@ -81,31 +87,42 @@ final class HangulFixViewModel: ObservableObject {
         let roots = selectedURLs
         isBusy = true
         resetLastOperationState()
-        statusText = "한글 파일명을 검사하는 중…"
+        statusText = "한글 파일명과 Windows 호환성을 검사하는 중…"
 
         Task {
             do {
-                let result = try await Task.detached(priority: .userInitiated) {
-                    try FileNormalizer().scan(urls: roots)
+                let scanResult = try await Task.detached(priority: .userInitiated) {
+                    let renameCandidates = try FileNormalizer().scan(urls: roots)
+                    let windowsIssues = try WindowsCompatibilityValidator().scan(urls: roots)
+                    return (renameCandidates, windowsIssues)
                 }.value
 
-                candidates = result
-                let blocked = result.filter(\.isBlocked).count
+                candidates = scanResult.0
+                windowsCompatibilityIssues = scanResult.1
 
-                if result.isEmpty {
+                let blocked = scanResult.0.filter(\.isBlocked).count
+                let windowsIssueCount = scanResult.1.count
+
+                if scanResult.0.isEmpty {
                     archiveSourcePath = singleRootPath(from: roots)
-                    if archiveSourcePath != nil {
-                        statusText = "변환할 파일명이 없습니다. 이미 NFC 형식이며 Windows용 ZIP으로 저장할 수 있습니다."
+
+                    if windowsIssueCount > 0 {
+                        statusText = "NFC 변환 대상은 없지만 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다. ZIP 저장은 차단됩니다."
+                    } else if archiveSourcePath != nil {
+                        statusText = "변환할 파일명이 없습니다. 이미 NFC이며 Windows 파일명 검사도 통과해 ZIP으로 저장할 수 있습니다."
                     } else {
-                        statusText = "변환할 파일명이 없습니다. 이미 NFC 형식입니다."
+                        statusText = "변환할 파일명이 없습니다. 이미 NFC이며 Windows 파일명 검사도 통과했습니다."
                     }
                 } else if blocked > 0 {
-                    statusText = "\(result.count)개 중 \(blocked)개에서 이름 충돌이 발견되었습니다."
+                    statusText = "\(scanResult.0.count)개 중 \(blocked)개에서 이름 충돌이 발견되었습니다."
+                } else if windowsIssueCount > 0 {
+                    statusText = "NFC 변환 대상 \(scanResult.0.count)개와 Windows 비호환 파일명 \(windowsIssueCount)개가 발견되었습니다."
                 } else {
-                    statusText = "\(result.count)개의 파일/폴더 이름을 Windows 호환 NFC로 변환할 수 있습니다."
+                    statusText = "\(scanResult.0.count)개의 이름을 Windows 호환 NFC로 변환할 수 있으며 Windows 파일명 검사도 통과했습니다."
                 }
             } catch {
                 candidates = []
+                windowsCompatibilityIssues = []
                 archiveSourcePath = nil
                 statusText = "검사 실패: \(error.localizedDescription)"
             }
@@ -119,7 +136,7 @@ final class HangulFixViewModel: ObservableObject {
         let items = candidates
         let roots = selectedURLs
         isBusy = true
-        resetLastOperationState()
+        resetLastOperationState(clearWindowsIssues: false)
         statusText = "파일명을 변환하는 중…"
 
         Task {
@@ -138,8 +155,11 @@ final class HangulFixViewModel: ObservableObject {
                     roots: roots,
                     candidates: items
                 )
-                if archiveSourcePath != nil {
-                    statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다. ZIP 저장도 가능합니다."
+
+                if !windowsCompatibilityIssues.isEmpty {
+                    statusText = "NFC 변환 완료: \(result.succeeded.count)개를 확인했습니다. Windows 비호환 이름 \(windowsCompatibilityIssues.count)개가 있어 ZIP 저장은 차단됩니다."
+                } else if archiveSourcePath != nil {
+                    statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 Windows 파일명 검사까지 통과했습니다. ZIP 저장도 가능합니다."
                 } else {
                     statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다."
                 }
@@ -175,7 +195,7 @@ final class HangulFixViewModel: ObservableObject {
 
                 lastZipURL = destinationURL
                 lastZipEntryCount = verification.entryCount
-                statusText = "ZIP 완료: 내부 \(verification.entryCount)개 entry가 모두 UTF-8 NFC인지 확인했습니다."
+                statusText = "ZIP 완료: 내부 \(verification.entryCount)개 entry가 UTF-8 NFC 및 Windows 파일명 규칙을 통과했습니다."
             } catch {
                 zipErrorText = error.localizedDescription
                 statusText = "ZIP 생성 실패: \(error.localizedDescription)"
@@ -193,6 +213,7 @@ final class HangulFixViewModel: ObservableObject {
         lastUndoCount = 0
         archiveSourcePath = nil
         zipErrorText = nil
+        windowsCompatibilityIssues = []
         statusText = "마지막 변환을 원래 파일명으로 되돌리는 중…"
 
         Task {
@@ -247,7 +268,7 @@ final class HangulFixViewModel: ObservableObject {
             : parentPath + "/" + rootCandidate.targetName
     }
 
-    private func resetLastOperationState() {
+    private func resetLastOperationState(clearWindowsIssues: Bool = true) {
         lastFailures = []
         lastSuccessCount = 0
         lastUndoCount = 0
@@ -256,5 +277,8 @@ final class HangulFixViewModel: ObservableObject {
         lastZipURL = nil
         lastZipEntryCount = 0
         zipErrorText = nil
+        if clearWindowsIssues {
+            windowsCompatibilityIssues = []
+        }
     }
 }
