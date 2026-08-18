@@ -93,16 +93,21 @@ final class SafeMailComposerViewModel: ObservableObject {
         let configuration = MicrosoftGraphConfiguration(clientID: clientID, tenant: tenant)
         signInTask?.cancel()
         signInTask = nil
-        do {
-            try authenticator.signOut(configuration: configuration)
-            isSignedIn = false
-            isWaitingForSignIn = false
-            devicePrompt = nil
-            draftResult = nil
-            errorText = nil
-            statusText = "Microsoft 로그아웃이 완료되었습니다."
-        } catch {
-            errorText = error.localizedDescription
+        isBusy = true
+
+        Task {
+            do {
+                try await authenticator.signOut(configuration: configuration)
+                isSignedIn = false
+                isWaitingForSignIn = false
+                devicePrompt = nil
+                draftResult = nil
+                errorText = nil
+                statusText = "Microsoft 로그아웃이 완료되었습니다."
+            } catch {
+                errorText = error.localizedDescription
+            }
+            isBusy = false
         }
     }
 
