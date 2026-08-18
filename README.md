@@ -15,6 +15,10 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - 변환 후 실제 디렉터리 엔트리가 NFC UTF-8 바이트로 저장됐는지 검증
 - 런타임 오류 발생 시 이전 변경을 역순으로 자동 rollback
 - 마지막 성공 변환을 원래 파일명으로 실행 취소(Undo)
+- 변환 완료 또는 이미 NFC인 단일 파일/폴더를 Windows용 ZIP으로 저장
+- ZIP central directory의 모든 entry 이름을 UTF-8 NFC 바이트로 재검증
+- ZIP 생성 중 문제가 있으면 최종 ZIP을 교체하지 않고 실패 처리
+- Windows용 ZIP에서 `__MACOSX` 메타데이터 entry 제외
 - 파일 내용은 수정하지 않고 이름만 변경
 - broken symbolic link도 링크 자체의 이름만 안전하게 변환
 - 패키지(`.app` 등) 내부는 기본적으로 재귀 탐색하지 않음
@@ -61,6 +65,24 @@ Undo도 단순 역 rename이 아니라 중첩 폴더를 고려해 부모부터 �
 
 앱을 종료하거나 새 파일/폴더를 선택해 다른 작업을 시작하면 마지막 Undo 기록은 초기화됩니다.
 
+## Windows용 ZIP 저장
+
+단일 파일 또는 폴더를 선택했을 때 모든 이름이 이미 NFC이거나 HangulFix 변환이 성공하면 **ZIP으로 저장** 버튼을 사용할 수 있습니다.
+
+ZIP은 다음 순서로 생성합니다.
+
+1. 압축 대상 전체에 NFD 이름이 남아 있지 않은지 재검사
+2. 임시 ZIP 생성
+3. ZIP central directory를 직접 읽어 모든 entry 이름이 유효한 UTF-8인지 확인
+4. 비 ASCII 이름에 UTF-8 플래그가 있는지 확인
+5. 실제 filename bytes가 NFC와 정확히 일치하는지 확인
+6. `__MACOSX` 및 위험한 절대/상위 경로 entry가 없는지 확인
+7. 모든 검증이 통과한 경우에만 임시 ZIP을 최종 저장 경로로 atomic rename
+
+따라서 ZIP 생성이나 검증이 실패하면 기존 최종 ZIP을 중간 상태의 파일로 덮어쓰지 않습니다.
+
+현재 앱 내 ZIP 저장은 한 번에 **단일 선택 루트**를 대상으로 합니다. 그 루트 아래의 파일/하위 폴더는 모두 포함됩니다.
+
 ## 전체 로컬 검증
 
 배포 전에 아래 한 명령으로 unit test, Release build, `.app` 생성, 실행 파일 존재 여부, codesign 검증까지 수행합니다.
@@ -69,7 +91,7 @@ Undo도 단순 역 rename이 아니라 중첩 폴더를 고려해 부모부터 �
 make verify
 ```
 
-배포용 ZIP과 SHA-256 checksum까지 만들려면:
+배포용 앱 ZIP과 SHA-256 checksum까지 만들려면:
 
 ```bash
 make package
@@ -134,6 +156,8 @@ rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리
 
 Undo는 마지막 성공 배치의 후보 목록을 메모리에만 유지하고, 부모 디렉터리부터 원래 이름으로 복원합니다. Undo가 중간에 실패하면 이미 복원한 항목을 변환 순서대로 재적용해 가능한 한 변환 완료 상태로 되돌립니다.
 
+Windows용 ZIP은 원본 이름 검증과 archive central-directory 검증을 둘 다 통과해야 성공 처리합니다.
+
 ## 자동 테스트
 
 GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
@@ -151,6 +175,10 @@ GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
 - 중첩 폴더 전체 Undo 순서 검증
 - broken symbolic link 이름 변환 및 링크 대상 보존
 - `.app` 패키지 내부 탐색 제외
+- NFC 변환 후 Windows용 ZIP 생성
+- ZIP central-directory UTF-8/NFC 검증
+- ZIP round-trip 추출 후 이름 및 파일 내용 보존
+- NFD가 남은 source의 ZIP 생성 차단
 - Release build
 - `.app` 번들 생성 및 codesign 검증
 - E2E fixture generator 문법 및 생성 검증
@@ -158,11 +186,10 @@ GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
 
 ## 개발 상태
 
-현재 버전: **0.5.0 Undo pass**
+현재 버전: **0.6.0 verified ZIP pass**
 
 다음 단계:
 
-- ZIP 생성 시 파일명 NFC 보정 및 ZIP entry 검증
 - Windows 금지 문자/예약 이름 사전 검사
 - 앱 아이콘 및 배포 UX
 - 자동 감시 폴더

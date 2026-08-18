@@ -10,8 +10,12 @@ final class HangulFixViewModel: ObservableObject {
     @Published private(set) var lastFailures: [RenameFailure] = []
     @Published private(set) var lastSuccessCount = 0
     @Published private(set) var lastUndoCount = 0
+    @Published private(set) var lastZipURL: URL?
+    @Published private(set) var lastZipEntryCount = 0
+    @Published private(set) var zipErrorText: String?
 
     private var lastSucceededCandidates: [RenameCandidate] = []
+    private var archiveSourcePath: String?
 
     var blockedCount: Int {
         candidates.filter(\.isBlocked).count
@@ -23,6 +27,23 @@ final class HangulFixViewModel: ObservableObject {
 
     var canUndo: Bool {
         !isBusy && !lastSucceededCandidates.isEmpty && lastFailures.isEmpty
+    }
+
+    var canCreateZip: Bool {
+        !isBusy
+            && archiveSourcePath != nil
+            && candidates.isEmpty
+            && lastFailures.isEmpty
+    }
+
+    var hasOperationError: Bool {
+        !lastFailures.isEmpty || zipErrorText != nil || blockedCount > 0
+    }
+
+    var suggestedZipName: String {
+        guard let archiveSourcePath else { return "HangulFix.zip" }
+        let name = (archiveSourcePath as NSString).lastPathComponent
+        return name.isEmpty ? "HangulFix.zip" : name + ".zip"
     }
 
     func addURLs(_ urls: [URL]) {
@@ -52,6 +73,7 @@ final class HangulFixViewModel: ObservableObject {
         guard !isBusy else { return }
         guard !selectedURLs.isEmpty else {
             candidates = []
+            archiveSourcePath = nil
             statusText = "파일 또는 폴더를 선택하세요."
             return
         }
@@ -71,7 +93,12 @@ final class HangulFixViewModel: ObservableObject {
                 let blocked = result.filter(\.isBlocked).count
 
                 if result.isEmpty {
-                    statusText = "변환할 파일명이 없습니다. 이미 NFC 형식입니다."
+                    archiveSourcePath = singleRootPath(from: roots)
+                    if archiveSourcePath != nil {
+                        statusText = "변환할 파일명이 없습니다. 이미 NFC 형식이며 Windows용 ZIP으로 저장할 수 있습니다."
+                    } else {
+                        statusText = "변환할 파일명이 없습니다. 이미 NFC 형식입니다."
+                    }
                 } else if blocked > 0 {
                     statusText = "\(result.count)개 중 \(blocked)개에서 이름 충돌이 발견되었습니다."
                 } else {
@@ -79,6 +106,7 @@ final class HangulFixViewModel: ObservableObject {
                 }
             } catch {
                 candidates = []
+                archiveSourcePath = nil
                 statusText = "검사 실패: \(error.localizedDescription)"
             }
             isBusy = false
@@ -89,6 +117,7 @@ final class HangulFixViewModel: ObservableObject {
         guard canExecute else { return }
 
         let items = candidates
+        let roots = selectedURLs
         isBusy = true
         resetLastOperationState()
         statusText = "파일명을 변환하는 중…"
@@ -105,7 +134,15 @@ final class HangulFixViewModel: ObservableObject {
             if result.failures.isEmpty {
                 lastSucceededCandidates = result.succeeded
                 lastSuccessCount = result.succeeded.count
-                statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다."
+                archiveSourcePath = resolvedConvertedRootPath(
+                    roots: roots,
+                    candidates: items
+                )
+                if archiveSourcePath != nil {
+                    statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다. ZIP 저장도 가능합니다."
+                } else {
+                    statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다."
+                }
             } else if result.rolledBackCount > 0, result.succeeded.isEmpty {
                 statusText = "변환 중 오류로 작업을 중단했고, 이전 \(result.rolledBackCount)개 변경을 원래 이름으로 되돌렸습니다. 실패 항목을 확인해 주세요."
             } else if result.rolledBackCount > 0 {
@@ -118,6 +155,35 @@ final class HangulFixViewModel: ObservableObject {
         }
     }
 
+    func createZip(at destinationURL: URL) {
+        guard canCreateZip, let sourcePath = archiveSourcePath else { return }
+
+        isBusy = true
+        zipErrorText = nil
+        lastZipURL = nil
+        lastZipEntryCount = 0
+        statusText = "Windows용 ZIP을 만들고 내부 파일명을 검증하는 중…"
+
+        Task {
+            do {
+                let verification = try await Task.detached(priority: .userInitiated) {
+                    try ZipArchiveService().createVerifiedArchive(
+                        sourcePath: sourcePath,
+                        destinationURL: destinationURL
+                    )
+                }.value
+
+                lastZipURL = destinationURL
+                lastZipEntryCount = verification.entryCount
+                statusText = "ZIP 완료: 내부 \(verification.entryCount)개 entry가 모두 UTF-8 NFC인지 확인했습니다."
+            } catch {
+                zipErrorText = error.localizedDescription
+                statusText = "ZIP 생성 실패: \(error.localizedDescription)"
+            }
+            isBusy = false
+        }
+    }
+
     func undoLastConversion() {
         guard canUndo else { return }
 
@@ -125,6 +191,8 @@ final class HangulFixViewModel: ObservableObject {
         isBusy = true
         lastFailures = []
         lastUndoCount = 0
+        archiveSourcePath = nil
+        zipErrorText = nil
         statusText = "마지막 변환을 원래 파일명으로 되돌리는 중…"
 
         Task {
@@ -153,10 +221,40 @@ final class HangulFixViewModel: ObservableObject {
         }
     }
 
+    private func singleRootPath(from roots: [URL]) -> String? {
+        guard roots.count == 1 else { return nil }
+        return roots[0].standardizedFileURL.path
+    }
+
+    private func resolvedConvertedRootPath(
+        roots: [URL],
+        candidates: [RenameCandidate]
+    ) -> String? {
+        guard roots.count == 1 else { return nil }
+
+        let rootPath = roots[0].standardizedFileURL.path
+        let rootKey = Data(rootPath.utf8)
+
+        guard let rootCandidate = candidates.first(where: {
+            Data($0.sourceURL.standardizedFileURL.path.utf8) == rootKey
+        }) else {
+            return rootPath
+        }
+
+        let parentPath = rootCandidate.sourceURL.deletingLastPathComponent().path
+        return parentPath == "/"
+            ? "/" + rootCandidate.targetName
+            : parentPath + "/" + rootCandidate.targetName
+    }
+
     private func resetLastOperationState() {
         lastFailures = []
         lastSuccessCount = 0
         lastUndoCount = 0
         lastSucceededCandidates = []
+        archiveSourcePath = nil
+        lastZipURL = nil
+        lastZipEntryCount = 0
+        zipErrorText = nil
     }
 }

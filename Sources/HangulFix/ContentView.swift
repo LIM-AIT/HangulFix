@@ -45,7 +45,12 @@ struct ContentView: View {
 
             Spacer()
 
-            if !viewModel.selectedURLs.isEmpty || viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 || !viewModel.lastFailures.isEmpty {
+            if !viewModel.selectedURLs.isEmpty
+                || viewModel.lastSuccessCount > 0
+                || viewModel.lastUndoCount > 0
+                || viewModel.lastZipURL != nil
+                || !viewModel.lastFailures.isEmpty
+                || viewModel.zipErrorText != nil {
                 Button("초기화") {
                     viewModel.clear()
                 }
@@ -123,6 +128,20 @@ struct ContentView: View {
             Spacer()
         } else if !viewModel.lastFailures.isEmpty {
             failurePreview
+        } else if let zipError = viewModel.zipErrorText {
+            ContentUnavailableView(
+                "ZIP 생성 실패",
+                systemImage: "exclamationmark.triangle.fill",
+                description: Text(zipError)
+            )
+            .frame(maxHeight: .infinity)
+        } else if let zipURL = viewModel.lastZipURL {
+            ContentUnavailableView(
+                "Windows용 ZIP 생성 완료",
+                systemImage: "archivebox.fill",
+                description: Text("\(zipURL.lastPathComponent) · 내부 \(viewModel.lastZipEntryCount)개 entry의 UTF-8 NFC 파일명을 검증했습니다.")
+            )
+            .frame(maxHeight: .infinity)
         } else if viewModel.lastUndoCount > 0 {
             ContentUnavailableView(
                 "실행 취소 완료",
@@ -134,14 +153,14 @@ struct ContentView: View {
             ContentUnavailableView(
                 "변환 완료",
                 systemImage: "checkmark.circle.fill",
-                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다. 필요하면 ⌘Z로 되돌릴 수 있습니다.")
+                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다. 필요하면 ZIP으로 저장하거나 ⌘Z로 되돌릴 수 있습니다.")
             )
             .frame(maxHeight: .infinity)
         } else if viewModel.candidates.isEmpty {
             ContentUnavailableView(
                 "변환 대상 없음",
                 systemImage: "textformat.abc",
-                description: Text("NFD 형식의 한글 파일/폴더가 발견되면 여기에 표시됩니다.")
+                description: Text("NFD 형식의 한글 파일/폴더가 발견되면 여기에 표시됩니다. 이미 NFC인 단일 항목은 바로 ZIP으로 저장할 수 있습니다.")
             )
             .frame(maxHeight: .infinity)
         } else {
@@ -216,6 +235,16 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let zipURL = viewModel.lastZipURL {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([zipURL])
+                } label: {
+                    Label("ZIP 보기", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isBusy)
+            }
+
             if viewModel.canUndo {
                 Button {
                     viewModel.undoLastConversion()
@@ -224,6 +253,15 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .keyboardShortcut("z", modifiers: [.command])
+            }
+
+            if viewModel.canCreateZip {
+                Button {
+                    saveZip()
+                } label: {
+                    Label("ZIP으로 저장", systemImage: "archivebox")
+                }
+                .buttonStyle(.bordered)
             }
 
             if !viewModel.candidates.isEmpty {
@@ -240,8 +278,11 @@ struct ContentView: View {
     }
 
     private var footerIcon: String {
-        if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
+        if viewModel.hasOperationError {
             return "exclamationmark.triangle.fill"
+        }
+        if viewModel.lastZipURL != nil {
+            return "archivebox.fill"
         }
         if viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 {
             return "checkmark.circle.fill"
@@ -250,10 +291,10 @@ struct ContentView: View {
     }
 
     private var footerIconColor: Color {
-        if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
+        if viewModel.hasOperationError {
             return .orange
         }
-        if viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 {
+        if viewModel.lastZipURL != nil || viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 {
             return .green
         }
         return .secondary
@@ -270,6 +311,20 @@ struct ContentView: View {
 
         if panel.runModal() == .OK {
             viewModel.addURLs(panel.urls)
+        }
+    }
+
+    private func saveZip() {
+        let panel = NSSavePanel()
+        panel.title = "Windows용 ZIP 저장"
+        panel.prompt = "저장"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = viewModel.suggestedZipName
+
+        if panel.runModal() == .OK, let url = panel.url {
+            viewModel.createZip(at: url)
         }
     }
 
