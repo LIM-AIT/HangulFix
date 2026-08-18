@@ -36,5 +36,7 @@ jobs:
           path: |
             dist/HangulFix-macOS.zip
             dist/HangulFix-macOS.zip.sha256
+            dist/HangulFix-macOS.dmg
+            dist/HangulFix-macOS.dmg.sha256
           if-no-files-found: error
           retention-days: 14

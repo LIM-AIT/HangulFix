@@ -26,7 +26,10 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - `__MACOSX` 및 위험한 ZIP 경로 차단
 - broken symbolic link는 링크 대상이 아닌 링크 이름만 처리
 - `.app` 같은 패키지 내부는 기본적으로 재귀 탐색하지 않음
-- Release `.app` 생성, ad-hoc codesign, CI package/checksum 생성
+- HangulFix 전용 macOS 앱 아이콘 자동 생성 및 번들 포함
+- Release `.app`, 설치용 DMG, ZIP, SHA-256 checksum 생성
+- ad-hoc 로컬 서명과 Developer ID + Hardened Runtime 서명 경로 분리
+- `notarytool` 기반 Apple notarization 배포 스크립트 제공
 - 실제 APFS용 E2E fixture 생성/검증
 
 ## 요구 사항
@@ -34,8 +37,9 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - macOS 14 Sonoma 이상
 - Xcode 15.3 이상 또는 Swift 5.10 이상
 - E2E fixture 도구 사용 시 Python 3
+- 외부 배포용 공증을 사용할 경우 Apple Developer Program의 Developer ID Application 인증서와 `notarytool` 자격 증명
 
-## 실행
+## 빠른 실행
 
 ```bash
 git clone https://github.com/LIM-AIT/HangulFix.git
@@ -58,19 +62,37 @@ make app
 open dist/HangulFix.app
 ```
 
-`make app`은 Release 빌드 후 `dist/HangulFix.app`을 생성하고 로컬 사용을 위한 ad-hoc codesign을 적용합니다.
+`make app`은 Release 빌드, 앱 아이콘 생성, `.app` 번들 생성, 로컬 ad-hoc codesign을 한 번에 수행합니다.
 
-## 전체 검증
+생성된 앱에는 다음 메타데이터가 포함됩니다.
+
+- Bundle ID: `com.limait.HangulFix`
+- Category: Utilities
+- Minimum macOS: 14.0
+- App icon: `HangulFix.icns`
+
+## 내 Mac에 설치
+
+개발/개인 사용 시 관리자 권한 없이 `~/Applications`에 설치할 수 있습니다.
+
+```bash
+make install
+```
+
+실행 결과:
+
+```text
+~/Applications/HangulFix.app
+```
+
+기존 HangulFix가 있으면 새 빌드로 교체하고 앱을 실행합니다.
+
+## 배포 파일 만들기
+
+전체 검증 후 ZIP과 설치용 DMG를 만들려면:
 
 ```bash
 make verify
-```
-
-위 명령으로 unit test, Release build, `.app` 생성, 실행 파일 확인, codesign 검증을 수행합니다.
-
-배포용 앱 ZIP과 SHA-256 checksum까지 만들려면:
-
-```bash
 make package
 ```
 
@@ -79,7 +101,73 @@ make package
 ```text
 dist/HangulFix-macOS.zip
 dist/HangulFix-macOS.zip.sha256
+dist/HangulFix-macOS.dmg
+dist/HangulFix-macOS.dmg.sha256
 ```
+
+DMG 안에는 `HangulFix.app`과 `/Applications` 바로가기가 포함되어 일반적인 macOS 드래그 설치 방식으로 사용할 수 있습니다.
+
+DMG만 다시 만들려면:
+
+```bash
+make dmg
+```
+
+## Developer ID 서명 및 Apple 공증
+
+로컬 ad-hoc 서명은 본인 Mac에서 테스트하는 용도입니다. 다른 사용자에게 직접 배포하면서 Gatekeeper 경험을 정상화하려면 Developer ID 서명과 Apple notarization을 사용해야 합니다.
+
+먼저 Keychain에 Developer ID Application 인증서를 설치하고, `notarytool` credential profile을 한 번 등록합니다.
+
+예:
+
+```bash
+xcrun notarytool store-credentials "HangulFix-Notary"
+```
+
+그다음 환경 변수를 지정합니다.
+
+```bash
+export DEVELOPER_ID_APPLICATION='Developer ID Application: Your Name (TEAMID)'
+export NOTARYTOOL_PROFILE='HangulFix-Notary'
+```
+
+공증 릴리스 생성:
+
+```bash
+make notarize
+```
+
+이 작업은 다음 순서로 진행됩니다.
+
+1. Release app build
+2. 전용 앱 아이콘 포함
+3. Developer ID 서명
+4. Hardened Runtime 및 secure timestamp 적용
+5. codesign 검증
+6. 배포 DMG 생성
+7. `xcrun notarytool submit --wait` 제출
+8. notarization ticket staple
+9. staple 검증
+10. 최종 SHA-256 checksum 재생성
+
+Apple Developer 인증서/자격 증명은 저장소에 넣지 않으며 로컬 Keychain과 환경 변수로만 참조합니다.
+
+## 전체 로컬 검증
+
+```bash
+make verify
+```
+
+검증 항목에는 다음이 포함됩니다.
+
+- Swift unit tests
+- Release build
+- `.app` 생성
+- 앱 실행 파일 존재
+- `HangulFix.icns` 생성 및 번들 포함
+- 버전/아이콘 Info.plist 메타데이터
+- codesign 구조 검증
 
 ## 실행 취소(Undo)
 
@@ -91,7 +179,7 @@ dist/HangulFix-macOS.zip.sha256
 
 HangulFix는 NFC 여부와 별도로 실제 Windows 파일명 규칙을 검사합니다.
 
-Windows 비호환 이름이 발견되어도 NFC 변환 자체는 수행할 수 있지만, 해당 이름을 수정하기 전까지 **Windows용 ZIP 저장은 비활성화**됩니다. 따라서 Unicode 정규화 문제와 Windows 파일명 규칙 문제를 서로 섞지 않고 독립적으로 확인할 수 있습니다.
+Windows 비호환 이름이 발견되어도 NFC 변환 자체는 수행할 수 있지만, 해당 이름을 수정하기 전까지 **Windows용 ZIP 저장은 비활성화**됩니다. Unicode 정규화 문제와 Windows 파일명 규칙 문제를 독립적으로 확인합니다.
 
 예약 장치 이름은 대소문자를 구분하지 않고 확장자가 붙어도 차단합니다. 예: `CON`, `con.txt`, `COM1.log`, `LPT9.zip`.
 
@@ -111,7 +199,7 @@ ZIP 생성 절차:
 8. `__MACOSX`, 절대 경로, 상위 경로 entry 차단
 9. 모든 검증 통과 후에만 최종 ZIP으로 atomic rename
 
-따라서 생성 또는 검증이 실패하면 중간 상태 ZIP을 최종 결과로 남기지 않습니다.
+생성 또는 검증이 실패하면 중간 상태 ZIP을 최종 결과로 남기지 않습니다.
 
 ## 실제 파일시스템 E2E 테스트
 
@@ -167,14 +255,14 @@ GitHub Actions에서 다음을 검증합니다.
 - 기존 ZIP central directory의 Windows 비호환 entry 차단
 - Windows용 ZIP 생성 및 UTF-8/NFC 검증
 - ZIP round-trip
-- Release build / codesign / package
+- Release build / app icon / codesign / ZIP / DMG package
 
 ## 개발 상태
 
-현재 버전: **0.7.0 Windows filename safety pass**
+현재 버전: **0.8.0 product polish pass**
 
 다음 단계:
 
-- 앱 아이콘 및 배포 UX
-- 서명/공증(Notarization) 배포 설계
-- 자동 감시 폴더
+- 실제 Mac에서 아이콘/Dock/Finder/DMG 설치 UX 확인
+- Developer ID 인증서를 준비한 뒤 실제 notarization 1회 검증
+- 자동 감시 폴더 기능 검토
