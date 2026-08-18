@@ -8,11 +8,29 @@ guard CommandLine.arguments.count == 2 else {
 }
 
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[1])
-let canvas = NSSize(width: 1024, height: 1024)
-let image = NSImage(size: canvas)
+let pixels = 1024
 
-image.lockFocus()
-defer { image.unlockFocus() }
+guard let bitmap = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: pixels,
+    pixelsHigh: pixels,
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+), let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+    fputs("Failed to create bitmap graphics context\n", stderr)
+    exit(1)
+}
+
+bitmap.size = NSSize(width: pixels, height: pixels)
+
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = context
+context.imageInterpolation = .high
 
 let iconRect = NSRect(x: 40, y: 40, width: 944, height: 944)
 let iconPath = NSBezierPath(roundedRect: iconRect, xRadius: 224, yRadius: 224)
@@ -22,7 +40,11 @@ let gradient = NSGradient(colors: [
 ])!
 gradient.draw(in: iconPath, angle: -45)
 
-let highlight = NSBezierPath(roundedRect: NSRect(x: 82, y: 564, width: 860, height: 350), xRadius: 170, yRadius: 170)
+let highlight = NSBezierPath(
+    roundedRect: NSRect(x: 82, y: 564, width: 860, height: 350),
+    xRadius: 170,
+    yRadius: 170
+)
 NSColor.white.withAlphaComponent(0.08).setFill()
 highlight.fill()
 
@@ -69,10 +91,11 @@ arrow.line(to: NSPoint(x: 350, y: 160))
 NSColor.white.withAlphaComponent(0.82).setStroke()
 arrow.stroke()
 
-guard let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff),
-      let png = bitmap.representation(using: .png, properties: [:]) else {
-    fputs("Failed to render icon PNG\n", stderr)
+context.flushGraphics()
+NSGraphicsContext.restoreGraphicsState()
+
+guard let png = bitmap.representation(using: .png, properties: [:]) else {
+    fputs("Failed to encode icon PNG\n", stderr)
     exit(1)
 }
 
