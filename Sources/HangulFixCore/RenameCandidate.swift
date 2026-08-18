@@ -35,6 +35,8 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
     public let id: UUID
     public let sourceURL: URL
     public let targetURL: URL
+    public let sourcePath: String
+    public let targetPath: String
     public let sourceName: String
     public let targetName: String
     public let kind: FileItemKind
@@ -45,6 +47,8 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
         id: UUID = UUID(),
         sourceURL: URL,
         targetURL: URL,
+        sourcePath: String? = nil,
+        targetPath: String? = nil,
         sourceName: String,
         targetName: String,
         kind: FileItemKind,
@@ -54,6 +58,8 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
         self.id = id
         self.sourceURL = sourceURL
         self.targetURL = targetURL
+        self.sourcePath = sourcePath ?? sourceURL.path
+        self.targetPath = targetPath ?? targetURL.path
         self.sourceName = sourceName
         self.targetName = targetName
         self.kind = kind
@@ -66,7 +72,8 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
     }
 
     public var parentPath: String {
-        sourceURL.deletingLastPathComponent().path
+        let parent = (sourcePath as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
     }
 }
 
