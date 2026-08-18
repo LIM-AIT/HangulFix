@@ -43,7 +43,7 @@ package: app
 	./scripts/create-dmg.sh
 
 dist-verify: package
-	./scripts/verify-distribution.sh
+	bash scripts/verify-distribution.sh
 
 dmg: app
 	./scripts/create-dmg.sh
