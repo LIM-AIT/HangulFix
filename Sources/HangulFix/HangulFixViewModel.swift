@@ -34,7 +34,6 @@ final class HangulFixViewModel: ObservableObject {
             && archiveSourcePath != nil
             && candidates.isEmpty
             && lastFailures.isEmpty
-            && zipErrorText == nil
     }
 
     var hasOperationError: Bool {
