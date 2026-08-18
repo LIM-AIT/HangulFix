@@ -100,9 +100,6 @@ final class FileNormalizerTests: XCTestCase {
         let fileURL = URL(fileURLWithPath: filePath)
         let payload = Data("keep-me".utf8)
 
-        // Foundation URL-based file creation can decompose a filename on macOS.
-        // Create the directory entry through POSIX so this test genuinely starts
-        // with NFC UTF-8 bytes on disk.
         try writeExactFile(payload, to: filePath)
         XCTAssertTrue(try exactNameExists(nfc, in: root))
 
@@ -226,6 +223,72 @@ final class FileNormalizerTests: XCTestCase {
         XCTAssertFalse(try exactNameExists(first.targetName, in: root))
         XCTAssertEqual(try Data(contentsOf: first.sourceURL), firstPayload)
         XCTAssertFalse(try directoryNames(in: root).contains { $0.hasPrefix(".hangulfix-") })
+    }
+
+    func testUndoRestoresExactOriginalNameAndPreservesFile() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+
+        let nfc = "되돌리기_테스트.txt".precomposedStringWithCanonicalMapping
+        let nfd = nfc.decomposedStringWithCanonicalMapping
+        let sourceURL = root.appendingPathComponent(nfd)
+        let payload = Data("undo-payload".utf8)
+        try payload.write(to: sourceURL)
+
+        let before = try fileManager.attributesOfItem(atPath: sourceURL.path)
+        let normalizer = FileNormalizer()
+        let candidates = try normalizer.scan(urls: [root])
+        let execution = normalizer.execute(candidates)
+        XCTAssertTrue(execution.failures.isEmpty)
+        XCTAssertTrue(try exactNameExists(nfc, in: root))
+
+        let undo = normalizer.undo(execution.succeeded)
+        XCTAssertTrue(undo.failures.isEmpty, undo.failures.map(\.message).joined(separator: "\n"))
+        XCTAssertEqual(undo.undone.count, 1)
+        XCTAssertEqual(undo.reappliedCount, 0)
+        XCTAssertTrue(try exactNameExists(nfd, in: root))
+        XCTAssertFalse(try exactNameExists(nfc, in: root))
+        XCTAssertEqual(try Data(contentsOf: sourceURL), payload)
+
+        let after = try fileManager.attributesOfItem(atPath: sourceURL.path)
+        XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
+        XCTAssertFalse(try directoryNames(in: root).contains { $0.hasPrefix(".hangulfix-") })
+    }
+
+    func testUndoRestoresNestedDirectoryTreeInCorrectOrder() throws {
+        let workspace = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: workspace) }
+
+        let rootNFC = "복원_프로젝트".precomposedStringWithCanonicalMapping
+        let childNFC = "복원_자료".precomposedStringWithCanonicalMapping
+        let fileNFC = "복원_문서.txt".precomposedStringWithCanonicalMapping
+        let rootNFD = rootNFC.decomposedStringWithCanonicalMapping
+        let childNFD = childNFC.decomposedStringWithCanonicalMapping
+        let fileNFD = fileNFC.decomposedStringWithCanonicalMapping
+
+        let rootURL = workspace.appendingPathComponent(rootNFD, isDirectory: true)
+        let childURL = rootURL.appendingPathComponent(childNFD, isDirectory: true)
+        try fileManager.createDirectory(at: childURL, withIntermediateDirectories: true)
+        let payload = Data("nested-undo".utf8)
+        try payload.write(to: childURL.appendingPathComponent(fileNFD))
+
+        let normalizer = FileNormalizer()
+        let candidates = try normalizer.scan(urls: [rootURL])
+        XCTAssertEqual(candidates.count, 3)
+
+        let execution = normalizer.execute(candidates)
+        XCTAssertTrue(execution.failures.isEmpty)
+
+        let undo = normalizer.undo(execution.succeeded)
+        XCTAssertTrue(undo.failures.isEmpty, undo.failures.map(\.message).joined(separator: "\n"))
+        XCTAssertEqual(undo.undone.count, 3)
+
+        XCTAssertTrue(try exactNameExists(rootNFD, in: workspace))
+        let restoredRoot = workspace.appendingPathComponent(rootNFD, isDirectory: true)
+        XCTAssertTrue(try exactNameExists(childNFD, in: restoredRoot))
+        let restoredChild = restoredRoot.appendingPathComponent(childNFD, isDirectory: true)
+        XCTAssertTrue(try exactNameExists(fileNFD, in: restoredChild))
+        XCTAssertEqual(try Data(contentsOf: restoredChild.appendingPathComponent(fileNFD)), payload)
     }
 
     func testBrokenSymbolicLinkIsRenamedWithoutFollowingTarget() throws {

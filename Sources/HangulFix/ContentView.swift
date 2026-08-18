@@ -27,17 +27,6 @@ struct ContentView: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 520)
-        .onAppear {
-            consumeFinderServiceSelection()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: FinderServiceBridge.didReceiveURLs)) { _ in
-            consumeFinderServiceSelection()
-        }
-        .onChange(of: viewModel.isBusy) { _, isBusy in
-            if !isBusy {
-                consumeFinderServiceSelection()
-            }
-        }
     }
 
     private var header: some View {
@@ -56,7 +45,7 @@ struct ContentView: View {
 
             Spacer()
 
-            if !viewModel.selectedURLs.isEmpty || viewModel.lastSuccessCount > 0 || !viewModel.lastFailures.isEmpty {
+            if !viewModel.selectedURLs.isEmpty || viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 || !viewModel.lastFailures.isEmpty {
                 Button("초기화") {
                     viewModel.clear()
                 }
@@ -134,11 +123,18 @@ struct ContentView: View {
             Spacer()
         } else if !viewModel.lastFailures.isEmpty {
             failurePreview
+        } else if viewModel.lastUndoCount > 0 {
+            ContentUnavailableView(
+                "실행 취소 완료",
+                systemImage: "arrow.uturn.backward.circle.fill",
+                description: Text("\(viewModel.lastUndoCount)개의 이름을 변환 전 상태로 복원했습니다.")
+            )
+            .frame(maxHeight: .infinity)
         } else if viewModel.lastSuccessCount > 0 {
             ContentUnavailableView(
                 "변환 완료",
                 systemImage: "checkmark.circle.fill",
-                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다.")
+                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다. 필요하면 ⌘Z로 되돌릴 수 있습니다.")
             )
             .frame(maxHeight: .infinity)
         } else if viewModel.candidates.isEmpty {
@@ -175,7 +171,7 @@ struct ContentView: View {
     private var failurePreview: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
-                Label("변환하지 못한 항목", systemImage: "exclamationmark.triangle.fill")
+                Label("처리하지 못한 항목", systemImage: "exclamationmark.triangle.fill")
                     .font(.headline)
                     .foregroundStyle(.orange)
 
@@ -220,12 +216,24 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("NFC로 변환") {
-                viewModel.execute()
+            if viewModel.canUndo {
+                Button {
+                    viewModel.undoLastConversion()
+                } label: {
+                    Label("실행 취소", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("z", modifiers: [.command])
             }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(!viewModel.canExecute)
+
+            if !viewModel.candidates.isEmpty {
+                Button("NFC로 변환") {
+                    viewModel.execute()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .disabled(!viewModel.canExecute)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -235,7 +243,7 @@ struct ContentView: View {
         if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
             return "exclamationmark.triangle.fill"
         }
-        if viewModel.lastSuccessCount > 0 {
+        if viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 {
             return "checkmark.circle.fill"
         }
         return "info.circle"
@@ -245,7 +253,7 @@ struct ContentView: View {
         if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
             return .orange
         }
-        if viewModel.lastSuccessCount > 0 {
+        if viewModel.lastSuccessCount > 0 || viewModel.lastUndoCount > 0 {
             return .green
         }
         return .secondary
@@ -295,14 +303,6 @@ struct ContentView: View {
         }
 
         return true
-    }
-
-    private func consumeFinderServiceSelection() {
-        guard !viewModel.isBusy else { return }
-
-        let urls = FinderServiceBridge.shared.consumePendingURLs()
-        guard !urls.isEmpty else { return }
-        viewModel.replaceURLs(urls)
     }
 }
 

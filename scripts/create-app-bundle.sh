@@ -34,31 +34,13 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.4.0</string>
+    <string>0.5.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>5</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSServices</key>
-    <array>
-        <dict>
-            <key>NSMenuItem</key>
-            <dict>
-                <key>default</key>
-                <string>HangulFix로 NFC 변환</string>
-            </dict>
-            <key>NSMessage</key>
-            <string>openInHangulFix</string>
-            <key>NSPortName</key>
-            <string>HangulFix</string>
-            <key>NSSendFileTypes</key>
-            <array>
-                <string>public.item</string>
-            </array>
-        </dict>
-    </array>
 </dict>
 </plist>
 PLIST
