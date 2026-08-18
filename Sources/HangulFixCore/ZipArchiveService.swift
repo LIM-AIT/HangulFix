@@ -97,6 +97,7 @@ public struct ZipArchiveService {
         if FileNormalizer.needsNFCNormalization(sourceName) {
             throw ZipArchiveError.sourceContainsNonNFC(sourceName)
         }
+        try verifyWindowsName(sourceName, displayPath: sourceName)
 
         var info = stat()
         let statResult = sourcePath.withCString { pointer in
@@ -127,6 +128,7 @@ public struct ZipArchiveService {
             if FileNormalizer.needsNFCNormalization(name) {
                 throw ZipArchiveError.sourceContainsNonNFC(relativePath)
             }
+            try verifyWindowsName(name, displayPath: relativePath)
 
             let childPath = rawChildPath(parentPath: directoryPath, leafName: name)
             var info = stat()
@@ -144,6 +146,15 @@ public struct ZipArchiveService {
                     relativePrefix: relativePath
                 )
             }
+        }
+    }
+
+    private func verifyWindowsName(_ name: String, displayPath: String) throws {
+        if let problem = WindowsCompatibilityValidator.problems(in: name).first {
+            throw ZipArchiveError.sourceContainsWindowsIncompatible(
+                path: displayPath,
+                reason: problem.message
+            )
         }
     }
 
@@ -189,8 +200,6 @@ public struct ZipArchiveService {
                 throw ZipArchiveError.invalidArchive("Local/Central filename bytes가 다릅니다: \(entry.name)")
             }
 
-            // Validate that the local extra field is also within the archive before
-            // writing the flag. Its contents do not need modification.
             let localEnd = localOffset
                 + 30
                 + UInt64(localNameLength)
@@ -357,6 +366,16 @@ public struct ZipArchiveService {
             throw ZipArchiveError.macMetadataEntry(name)
         }
 
+        for component in components where !component.isEmpty {
+            let componentName = String(component)
+            if let problem = WindowsCompatibilityValidator.problems(in: componentName).first {
+                throw ZipArchiveError.windowsIncompatibleEntry(
+                    name: name,
+                    reason: problem.message
+                )
+            }
+        }
+
         let normalized = name.precomposedStringWithCanonicalMapping
         guard rawName.elementsEqual(normalized.utf8) else {
             throw ZipArchiveError.nonNFCEntry(name)
@@ -465,6 +484,7 @@ private struct ParsedCentralEntry {
 public enum ZipArchiveError: LocalizedError, Equatable {
     case sourceMissing(String)
     case sourceContainsNonNFC(String)
+    case sourceContainsWindowsIncompatible(path: String, reason: String)
     case destinationParentMissing(String)
     case creationFailed(String)
     case archiveMissing(String)
@@ -475,6 +495,7 @@ public enum ZipArchiveError: LocalizedError, Equatable {
     case unmarkedUTF8Entry(String)
     case unsafeEntry(String)
     case macMetadataEntry(String)
+    case windowsIncompatibleEntry(name: String, reason: String)
 
     public var errorDescription: String? {
         switch self {
@@ -482,6 +503,8 @@ public enum ZipArchiveError: LocalizedError, Equatable {
             return "ZIP으로 만들 원본을 찾을 수 없습니다: \(path)"
         case .sourceContainsNonNFC(let path):
             return "ZIP 생성 전에 NFC 변환이 필요한 항목이 남아 있습니다: \(path)"
+        case .sourceContainsWindowsIncompatible(let path, let reason):
+            return "Windows에서 안전하지 않은 파일명이 있어 ZIP 생성을 중단했습니다: \(path) (\(reason))"
         case .destinationParentMissing(let path):
             return "ZIP 저장 폴더를 찾을 수 없습니다: \(path)"
         case .creationFailed(let reason):
@@ -502,6 +525,8 @@ public enum ZipArchiveError: LocalizedError, Equatable {
             return "ZIP 내부에 안전하지 않은 경로가 있습니다: \(name)"
         case .macMetadataEntry(let name):
             return "Windows용 ZIP에 macOS 메타데이터 항목이 포함되었습니다: \(name)"
+        case .windowsIncompatibleEntry(let name, let reason):
+            return "ZIP 내부에 Windows 비호환 파일명이 있습니다: \(name) (\(reason))"
         }
     }
 }
