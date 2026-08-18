@@ -1,6 +1,6 @@
 import Foundation
 
-public struct FileNormalizer: Sendable {
+public struct FileNormalizer {
     private let fileManager: FileManager
 
     public init(fileManager: FileManager = .default) {
@@ -181,10 +181,10 @@ public struct FileNormalizer: Sendable {
 
     private func isSameFilesystemObject(_ lhs: URL, _ rhs: URL) -> Bool {
         guard
-            let lhsIdentifier = try? lhs.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
-            let rhsIdentifier = try? rhs.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
-            let lhsIdentifier,
-            let rhsIdentifier
+            let lhsValues = try? lhs.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+            let rhsValues = try? rhs.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+            let lhsIdentifier = lhsValues.fileResourceIdentifier,
+            let rhsIdentifier = rhsValues.fileResourceIdentifier
         else {
             return false
         }
