@@ -71,9 +71,14 @@ public struct RenameCandidate: Identifiable, Sendable, Hashable {
         issue != nil
     }
 
+    /// Compute the parent with pure Swift string slicing so a filesystem spelling
+    /// already recovered from `readdir(3)` is not passed back through NSString path
+    /// APIs that may present a canonically equivalent Unicode representation.
     public var parentPath: String {
-        let parent = (sourcePath as NSString).deletingLastPathComponent
-        return parent.isEmpty ? "/" : parent
+        guard sourcePath != "/" else { return "/" }
+        guard let slash = sourcePath.lastIndex(of: "/") else { return "." }
+        if slash == sourcePath.startIndex { return "/" }
+        return String(sourcePath[..<slash])
     }
 }
 
