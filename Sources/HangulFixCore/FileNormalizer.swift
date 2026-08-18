@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 
 public struct FileNormalizer {
     private let fileManager: FileManager
@@ -22,7 +22,7 @@ public struct FileNormalizer {
     public func scan(urls: [URL]) throws -> [RenameCandidate] {
         let roots = deduplicated(urls)
         var allURLs: [URL] = []
-        var seenPaths = Set<String>()
+        var seenPaths = Set<Data>()
 
         for root in roots {
             appendIfNeeded(root, to: &allURLs, seenPaths: &seenPaths)
@@ -38,17 +38,28 @@ public struct FileNormalizer {
                 .fileResourceIdentifierKey
             ]
 
+            var enumerationFailure: (URL, Error)?
             guard let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: keys,
                 options: [.skipsPackageDescendants],
-                errorHandler: { _, _ in true }
+                errorHandler: { url, error in
+                    enumerationFailure = (url, error)
+                    return false
+                }
             ) else {
-                continue
+                throw FileNormalizerError.cannotEnumerate(root)
             }
 
             for case let child as URL in enumerator {
                 appendIfNeeded(child, to: &allURLs, seenPaths: &seenPaths)
+            }
+
+            if let failure = enumerationFailure {
+                throw FileNormalizerError.enumerationFailed(
+                    path: failure.0.path,
+                    reason: failure.1.localizedDescription
+                )
             }
         }
 
@@ -86,9 +97,9 @@ public struct FileNormalizer {
         guard Self.needsNFCNormalization(sourceName) else { return nil }
 
         let targetName = Self.normalizedNFC(sourceName)
-        let targetURL = sourceURL
-            .deletingLastPathComponent()
-            .appendingPathComponent(targetName)
+        let parentURL = sourceURL.deletingLastPathComponent()
+        let targetPath = rawChildPath(parentPath: parentURL.path, leafName: targetName)
+        let targetURL = URL(fileURLWithPath: targetPath)
 
         let values = try sourceURL.resourceValues(forKeys: [
             .isDirectoryKey,
@@ -108,8 +119,8 @@ public struct FileNormalizer {
         }
 
         var issue: RenameIssue?
-        if itemExists(at: targetURL), !isSameFilesystemObject(sourceURL, targetURL) {
-            issue = .conflict(existingPath: targetURL.path)
+        if pathExists(targetPath), !isSameFilesystemObject(sourceURL.path, targetPath) {
+            issue = .conflict(existingPath: targetPath)
         }
 
         return RenameCandidate(
@@ -124,62 +135,90 @@ public struct FileNormalizer {
     }
 
     private func rename(_ candidate: RenameCandidate) throws {
-        let sourceURL = candidate.sourceURL
-        let parentURL = sourceURL.deletingLastPathComponent()
-        let targetURL = parentURL.appendingPathComponent(candidate.targetName)
-        let targetPath = rawChildPath(parentURL: parentURL, leafName: candidate.targetName)
+        let sourcePath = candidate.sourceURL.path
+        let parentPath = candidate.sourceURL.deletingLastPathComponent().path
+        let targetPath = rawChildPath(parentPath: parentPath, leafName: candidate.targetName)
 
-        if itemExists(at: targetURL) {
-            guard isSameFilesystemObject(sourceURL, targetURL) else {
-                throw FileNormalizerError.destinationAlreadyExists(targetURL)
+        if pathExists(targetPath) {
+            guard isSameFilesystemObject(sourcePath, targetPath) else {
+                throw FileNormalizerError.destinationAlreadyExists(targetPath)
             }
 
             // APFS is normalization-insensitive. NFC and NFD paths may resolve to
             // the same object, so force the directory entry through a temporary
             // ASCII name before writing the final NFC bytes.
-            try renameThroughTemporaryPath(sourceURL: sourceURL, targetPath: targetPath)
+            try renameThroughTemporaryPath(
+                sourcePath: sourcePath,
+                parentPath: parentPath,
+                targetPath: targetPath,
+                targetName: candidate.targetName
+            )
         } else {
-            try posixRename(from: sourceURL.path, to: targetPath)
+            try posixRename(from: sourcePath, to: targetPath)
+            do {
+                try verifyStoredName(parentPath: parentPath, expectedName: candidate.targetName)
+            } catch {
+                try? posixRename(from: targetPath, to: sourcePath)
+                throw error
+            }
         }
     }
 
-    private func renameThroughTemporaryPath(sourceURL: URL, targetPath: String) throws {
-        let parentURL = sourceURL.deletingLastPathComponent()
-        let temporaryPath = uniqueTemporaryPath(in: parentURL)
-        let originalPath = sourceURL.path
-
-        try posixRename(from: originalPath, to: temporaryPath)
+    private func renameThroughTemporaryPath(
+        sourcePath: String,
+        parentPath: String,
+        targetPath: String,
+        targetName: String
+    ) throws {
+        let temporaryPath = uniqueTemporaryPath(in: parentPath)
+        try posixRename(from: sourcePath, to: temporaryPath)
 
         do {
             try posixRename(from: temporaryPath, to: targetPath)
+            do {
+                try verifyStoredName(parentPath: parentPath, expectedName: targetName)
+            } catch {
+                try? posixRename(from: targetPath, to: sourcePath)
+                throw error
+            }
         } catch {
-            // Best-effort rollback. Preserve the requested operation's error if
-            // rollback also fails.
-            try? posixRename(from: temporaryPath, to: originalPath)
+            if pathExists(temporaryPath) {
+                try? posixRename(from: temporaryPath, to: sourcePath)
+            }
             throw error
         }
     }
 
-    /// Build the destination as a plain Swift String instead of a file URL.
-    /// Foundation file-URL/path conversion can apply filesystem normalization on
-    /// macOS; POSIX rename receives these UTF-8 bytes exactly as constructed.
-    private func rawChildPath(parentURL: URL, leafName: String) -> String {
-        let parentPath = parentURL.path
+    /// Build a destination path as a plain Swift String. POSIX rename receives the
+    /// UTF-8 bytes exactly as constructed instead of letting file-URL conversion
+    /// decide the Unicode representation.
+    private func rawChildPath(parentPath: String, leafName: String) -> String {
         if parentPath == "/" {
             return "/" + leafName
         }
         return parentPath + "/" + leafName
     }
 
-    private func uniqueTemporaryPath(in directory: URL) -> String {
+    private func uniqueTemporaryPath(in parentPath: String) -> String {
         while true {
             let candidate = rawChildPath(
-                parentURL: directory,
+                parentPath: parentPath,
                 leafName: ".hangulfix-\(UUID().uuidString)"
             )
-            if !fileManager.fileExists(atPath: candidate) {
+            if !pathExists(candidate) {
                 return candidate
             }
+        }
+    }
+
+    private func verifyStoredName(parentPath: String, expectedName: String) throws {
+        let entries = try fileManager.contentsOfDirectory(atPath: parentPath)
+        let foundExactBytes = entries.contains { entry in
+            entry.utf8.elementsEqual(expectedName.utf8)
+        }
+
+        guard foundExactBytes else {
+            throw FileNormalizerError.persistedNameMismatch(expectedName)
         }
     }
 
@@ -203,43 +242,37 @@ public struct FileNormalizer {
         }
     }
 
-    private func itemExists(at url: URL) -> Bool {
-        do {
-            _ = try fileManager.attributesOfItem(atPath: url.path)
-            return true
-        } catch {
-            return false
-        }
+    /// Uses lstat so broken symbolic links are still treated as filesystem items.
+    private func pathExists(_ path: String) -> Bool {
+        var info = stat()
+        return path.withCString { pointer in
+            Darwin.lstat(pointer, &info)
+        } == 0
     }
 
-    private func isSameFilesystemObject(_ lhs: URL, _ rhs: URL) -> Bool {
-        guard
-            let lhsValues = try? lhs.resourceValues(forKeys: [.fileResourceIdentifierKey]),
-            let rhsValues = try? rhs.resourceValues(forKeys: [.fileResourceIdentifierKey]),
-            let lhsIdentifier = lhsValues.fileResourceIdentifier,
-            let rhsIdentifier = rhsValues.fileResourceIdentifier
-        else {
-            return false
+    private func isSameFilesystemObject(_ lhsPath: String, _ rhsPath: String) -> Bool {
+        var lhs = stat()
+        var rhs = stat()
+
+        let lhsResult = lhsPath.withCString { pointer in
+            Darwin.lstat(pointer, &lhs)
+        }
+        let rhsResult = rhsPath.withCString { pointer in
+            Darwin.lstat(pointer, &rhs)
         }
 
-        if let left = lhsIdentifier as? AnyHashable,
-           let right = rhsIdentifier as? AnyHashable {
-            return left == right
-        }
+        guard lhsResult == 0, rhsResult == 0 else { return false }
+        return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
+    }
 
-        if let left = lhsIdentifier as? NSObject,
-           let right = rhsIdentifier as? NSObject {
-            return left.isEqual(right)
-        }
-
-        return false
+    private func rawPathKey(_ url: URL) -> Data {
+        Data(url.standardizedFileURL.path.utf8)
     }
 
     private func deduplicated(_ urls: [URL]) -> [URL] {
-        var seen = Set<String>()
+        var seen = Set<Data>()
         return urls.compactMap { url in
-            let path = url.standardizedFileURL.path
-            guard seen.insert(path).inserted else { return nil }
+            guard seen.insert(rawPathKey(url)).inserted else { return nil }
             return url
         }
     }
@@ -247,10 +280,9 @@ public struct FileNormalizer {
     private func appendIfNeeded(
         _ url: URL,
         to urls: inout [URL],
-        seenPaths: inout Set<String>
+        seenPaths: inout Set<Data>
     ) {
-        let path = url.standardizedFileURL.path
-        guard seenPaths.insert(path).inserted else { return }
+        guard seenPaths.insert(rawPathKey(url)).inserted else { return }
         urls.append(url)
     }
 
@@ -268,17 +300,26 @@ public struct FileNormalizer {
             return true
         }
 
-        return lhs.sourceURL.path < rhs.sourceURL.path
+        return lhs.sourceURL.path.utf8.lexicographicallyPrecedes(rhs.sourceURL.path.utf8)
     }
 }
 
 public enum FileNormalizerError: LocalizedError {
-    case destinationAlreadyExists(URL)
+    case destinationAlreadyExists(String)
+    case persistedNameMismatch(String)
+    case cannotEnumerate(URL)
+    case enumerationFailed(path: String, reason: String)
 
     public var errorDescription: String? {
         switch self {
-        case .destinationAlreadyExists(let url):
-            return "같은 이름의 다른 항목이 이미 있습니다: \(url.lastPathComponent)"
+        case .destinationAlreadyExists(let path):
+            return "같은 이름의 다른 항목이 이미 있습니다: \(URL(fileURLWithPath: path).lastPathComponent)"
+        case .persistedNameMismatch(let name):
+            return "파일 시스템에 NFC 이름이 정확히 저장되지 않았습니다: \(name)"
+        case .cannotEnumerate(let url):
+            return "폴더를 읽을 수 없습니다: \(url.path)"
+        case .enumerationFailed(let path, let reason):
+            return "폴더 검사 중 오류가 발생했습니다: \(path) (\(reason))"
         }
     }
 }

@@ -10,7 +10,6 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-
             Divider()
 
             VStack(spacing: 16) {
@@ -46,7 +45,7 @@ struct ContentView: View {
 
             Spacer()
 
-            if !viewModel.selectedURLs.isEmpty {
+            if !viewModel.selectedURLs.isEmpty || viewModel.lastSuccessCount > 0 || !viewModel.lastFailures.isEmpty {
                 Button("초기화") {
                     viewModel.clear()
                 }
@@ -122,6 +121,15 @@ struct ContentView: View {
             ProgressView()
                 .controlSize(.large)
             Spacer()
+        } else if !viewModel.lastFailures.isEmpty {
+            failurePreview
+        } else if viewModel.lastSuccessCount > 0 {
+            ContentUnavailableView(
+                "변환 완료",
+                systemImage: "checkmark.circle.fill",
+                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다.")
+            )
+            .frame(maxHeight: .infinity)
         } else if viewModel.candidates.isEmpty {
             ContentUnavailableView(
                 "변환 대상 없음",
@@ -130,10 +138,51 @@ struct ContentView: View {
             )
             .frame(maxHeight: .infinity)
         } else {
-            List(viewModel.candidates) { candidate in
-                CandidateRow(candidate: candidate)
+            candidatePreview
+        }
+    }
+
+    private var candidatePreview: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(viewModel.candidates) { candidate in
+                    CandidateRow(candidate: candidate)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+
+                    Divider()
+                }
             }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
+        }
+        .background(Color.secondary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.secondary.opacity(0.12))
+        }
+    }
+
+    private var failurePreview: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                Label("변환하지 못한 항목", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+
+                ForEach(Array(viewModel.lastFailures.enumerated()), id: \.offset) { _, failure in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(failure.candidate.sourceName)
+                            .fontWeight(.medium)
+                        Text(failure.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
         }
     }
 
@@ -144,8 +193,8 @@ struct ContentView: View {
                     .controlSize(.small)
             }
 
-            Image(systemName: viewModel.blockedCount > 0 ? "exclamationmark.triangle.fill" : "info.circle")
-                .foregroundStyle(viewModel.blockedCount > 0 ? Color.orange : Color.secondary)
+            Image(systemName: footerIcon)
+                .foregroundStyle(footerIconColor)
 
             Text(viewModel.statusText)
                 .font(.callout)
@@ -171,6 +220,26 @@ struct ContentView: View {
         .padding(.vertical, 14)
     }
 
+    private var footerIcon: String {
+        if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
+            return "exclamationmark.triangle.fill"
+        }
+        if viewModel.lastSuccessCount > 0 {
+            return "checkmark.circle.fill"
+        }
+        return "info.circle"
+    }
+
+    private var footerIconColor: Color {
+        if !viewModel.lastFailures.isEmpty || viewModel.blockedCount > 0 {
+            return .orange
+        }
+        if viewModel.lastSuccessCount > 0 {
+            return .green
+        }
+        return .secondary
+    }
+
     private func openPanel() {
         let panel = NSOpenPanel()
         panel.title = "변환할 파일 또는 폴더 선택"
@@ -186,10 +255,11 @@ struct ContentView: View {
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard !viewModel.isBusy else { return false }
+
         let fileProviders = providers.filter {
             $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
         }
-
         guard !fileProviders.isEmpty else { return false }
 
         for provider in fileProviders {
@@ -267,6 +337,5 @@ private struct CandidateRow: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
     }
 }
