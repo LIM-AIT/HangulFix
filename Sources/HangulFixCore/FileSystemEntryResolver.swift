@@ -7,7 +7,30 @@ import Foundation
 /// spelling is stored in the directory entry.
 public enum FileSystemEntryResolver {
     public static func resolve(_ url: URL) throws -> URL {
-        URL(fileURLWithPath: try resolvePath(url.path))
+        let resolvedPath = try resolvePath(url.path)
+
+        var info = stat()
+        let result = resolvedPath.withCString { pointer in
+            Darwin.lstat(pointer, &info)
+        }
+        guard result == 0 else {
+            throw posixError(path: resolvedPath)
+        }
+
+        let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
+
+        // Use Foundation's file-system-representation initializer rather than
+        // `URL(fileURLWithPath:)`. The latter can present a canonically equivalent
+        // path spelling on macOS. Here the exact directory-entry spelling returned
+        // by `resolvePath` must survive the String -> URL round trip because the NFC
+        // scanner compares filename UTF-8 bytes.
+        return resolvedPath.withCString { pointer in
+            NSURL(
+                fileURLWithFileSystemRepresentation: pointer,
+                isDirectory: isDirectory,
+                relativeTo: nil
+            ) as URL
+        }
     }
 
     public static func resolvePath(_ path: String) throws -> String {
