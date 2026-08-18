@@ -43,6 +43,7 @@ final class FileNormalizerTests: XCTestCase {
         let result = normalizer.execute(candidates)
         XCTAssertTrue(result.failures.isEmpty, result.failures.map(\.message).joined(separator: "\n"))
         XCTAssertEqual(result.succeeded.count, 1)
+        XCTAssertEqual(result.rolledBackCount, 0)
 
         let names = try fileManager.contentsOfDirectory(atPath: root.path)
         XCTAssertTrue(names.contains { $0.utf8.elementsEqual(nfc.utf8) })
@@ -157,6 +158,121 @@ final class FileNormalizerTests: XCTestCase {
         }
     }
 
+    func testPreflightIssuePreventsAnyRename() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+
+        let firstNFC = "첫번째_문서.txt".precomposedStringWithCanonicalMapping
+        let secondNFC = "두번째_문서.txt".precomposedStringWithCanonicalMapping
+        let firstNFD = firstNFC.decomposedStringWithCanonicalMapping
+        let secondNFD = secondNFC.decomposedStringWithCanonicalMapping
+
+        try Data("one".utf8).write(to: root.appendingPathComponent(firstNFD))
+        try Data("two".utf8).write(to: root.appendingPathComponent(secondNFD))
+
+        let scanned = try FileNormalizer().scan(urls: [root])
+        XCTAssertEqual(scanned.count, 2)
+
+        let blockedSource = scanned[1]
+        let blocked = RenameCandidate(
+            id: blockedSource.id,
+            sourceURL: blockedSource.sourceURL,
+            targetURL: blockedSource.targetURL,
+            sourceName: blockedSource.sourceName,
+            targetName: blockedSource.targetName,
+            kind: blockedSource.kind,
+            depth: blockedSource.depth,
+            issue: .conflict(existingPath: blockedSource.targetURL.path)
+        )
+
+        let result = FileNormalizer().execute([scanned[0], blocked])
+        XCTAssertTrue(result.succeeded.isEmpty)
+        XCTAssertEqual(result.failures.count, 1)
+        XCTAssertEqual(result.rolledBackCount, 0)
+        XCTAssertTrue(try exactNameExists(scanned[0].sourceName, in: root))
+        XCTAssertTrue(try exactNameExists(scanned[1].sourceName, in: root))
+        XCTAssertFalse(try exactNameExists(scanned[0].targetName, in: root))
+        XCTAssertFalse(try exactNameExists(scanned[1].targetName, in: root))
+    }
+
+    func testRuntimeFailureRollsBackEarlierSuccessfulRename() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+
+        let names = ["가_문서.txt", "나_문서.txt"].map {
+            $0.precomposedStringWithCanonicalMapping
+        }
+        for (index, nfc) in names.enumerated() {
+            let nfd = nfc.decomposedStringWithCanonicalMapping
+            try Data("payload-\(index)".utf8).write(to: root.appendingPathComponent(nfd))
+        }
+
+        let normalizer = FileNormalizer()
+        let candidates = try normalizer.scan(urls: [root])
+        XCTAssertEqual(candidates.count, 2)
+
+        let first = candidates[0]
+        let second = candidates[1]
+        let firstPayload = try Data(contentsOf: first.sourceURL)
+
+        try fileManager.removeItem(atPath: second.sourceURL.path)
+
+        let result = normalizer.execute(candidates)
+        XCTAssertTrue(result.succeeded.isEmpty)
+        XCTAssertEqual(result.rolledBackCount, 1)
+        XCTAssertFalse(result.failures.isEmpty)
+
+        XCTAssertTrue(try exactNameExists(first.sourceName, in: root))
+        XCTAssertFalse(try exactNameExists(first.targetName, in: root))
+        XCTAssertEqual(try Data(contentsOf: first.sourceURL), firstPayload)
+        XCTAssertFalse(try directoryNames(in: root).contains { $0.hasPrefix(".hangulfix-") })
+    }
+
+    func testBrokenSymbolicLinkIsRenamedWithoutFollowingTarget() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+
+        let nfc = "끊어진_링크".precomposedStringWithCanonicalMapping
+        let nfd = nfc.decomposedStringWithCanonicalMapping
+        let sourcePath = rawChildPath(parentPath: root.path, leafName: nfd)
+        let target = "/definitely/missing/hangulfix-target"
+
+        let symlinkResult = target.withCString { targetPointer in
+            sourcePath.withCString { linkPointer in
+                Darwin.symlink(targetPointer, linkPointer)
+            }
+        }
+        XCTAssertEqual(symlinkResult, 0)
+
+        let normalizer = FileNormalizer()
+        let candidates = try normalizer.scan(urls: [root])
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].kind, .symbolicLink)
+
+        let result = normalizer.execute(candidates)
+        XCTAssertTrue(result.failures.isEmpty, result.failures.map(\.message).joined(separator: "\n"))
+        XCTAssertTrue(try exactNameExists(nfc, in: root))
+
+        let convertedPath = rawChildPath(parentPath: root.path, leafName: nfc)
+        XCTAssertEqual(try readSymbolicLink(at: convertedPath), target)
+    }
+
+    func testPackageDescendantsAreSkipped() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? fileManager.removeItem(at: root) }
+
+        let package = root.appendingPathComponent("Sample.app", isDirectory: true)
+        try fileManager.createDirectory(at: package, withIntermediateDirectories: true)
+
+        let internalNFC = "내부_파일.txt".precomposedStringWithCanonicalMapping
+        let internalNFD = internalNFC.decomposedStringWithCanonicalMapping
+        try Data("inside".utf8).write(to: package.appendingPathComponent(internalNFD))
+
+        let candidates = try FileNormalizer().scan(urls: [root])
+        XCTAssertTrue(candidates.isEmpty)
+        XCTAssertTrue(try exactNameExists(internalNFD, in: package))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = fileManager.temporaryDirectory
             .appendingPathComponent("HangulFixTests-\(UUID().uuidString)", isDirectory: true)
@@ -164,8 +280,12 @@ final class FileNormalizerTests: XCTestCase {
         return url
     }
 
+    private func directoryNames(in directory: URL) throws -> [String] {
+        try fileManager.contentsOfDirectory(atPath: directory.path)
+    }
+
     private func exactNameExists(_ expectedName: String, in directory: URL) throws -> Bool {
-        try fileManager.contentsOfDirectory(atPath: directory.path).contains { name in
+        try directoryNames(in: directory).contains { name in
             name.utf8.elementsEqual(expectedName.utf8)
         }
     }
@@ -211,6 +331,20 @@ final class FileNormalizerTests: XCTestCase {
                 totalWritten += written
             }
         }
+    }
+
+    private func readSymbolicLink(at path: String) throws -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = path.withCString { pointer in
+            Darwin.readlink(pointer, &buffer, Int(PATH_MAX))
+        }
+
+        guard count >= 0 else {
+            throw posixError(path: path)
+        }
+
+        buffer[Int(count)] = 0
+        return String(cString: buffer)
     }
 
     private func posixError(path: String) -> NSError {

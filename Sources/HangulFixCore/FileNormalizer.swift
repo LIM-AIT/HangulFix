@@ -68,28 +68,60 @@ public struct FileNormalizer {
         return candidates
     }
 
+    /// Executes the batch as an all-or-nothing operation as far as the filesystem
+    /// allows. Preflight issues stop the batch before the first rename. If a runtime
+    /// failure happens after earlier items were converted, those earlier changes are
+    /// rolled back in reverse execution order so nested directory paths stay valid.
     public func execute(_ candidates: [RenameCandidate]) -> RenameExecutionResult {
         let ordered = candidates.sorted(by: executionOrder)
+
+        let preflightFailures = ordered.compactMap { candidate -> RenameFailure? in
+            guard let issue = candidate.issue else { return nil }
+            return RenameFailure(candidate: candidate, message: issue.message)
+        }
+
+        guard preflightFailures.isEmpty else {
+            return RenameExecutionResult(succeeded: [], failures: preflightFailures)
+        }
+
         var succeeded: [RenameCandidate] = []
-        var failures: [RenameFailure] = []
 
         for candidate in ordered {
-            if let issue = candidate.issue {
-                failures.append(RenameFailure(candidate: candidate, message: issue.message))
-                continue
-            }
-
             do {
                 try rename(candidate)
                 succeeded.append(candidate)
             } catch {
-                failures.append(
+                var failures = [
                     RenameFailure(candidate: candidate, message: error.localizedDescription)
+                ]
+                var remainingConverted = Set(succeeded.map(\.id))
+                var rolledBackCount = 0
+
+                for previous in succeeded.reversed() {
+                    do {
+                        try rollback(previous)
+                        remainingConverted.remove(previous.id)
+                        rolledBackCount += 1
+                    } catch {
+                        failures.append(
+                            RenameFailure(
+                                candidate: previous,
+                                message: "롤백 실패: \(error.localizedDescription)"
+                            )
+                        )
+                    }
+                }
+
+                let stillConverted = succeeded.filter { remainingConverted.contains($0.id) }
+                return RenameExecutionResult(
+                    succeeded: stillConverted,
+                    failures: failures,
+                    rolledBackCount: rolledBackCount
                 )
             }
         }
 
-        return RenameExecutionResult(succeeded: succeeded, failures: failures)
+        return RenameExecutionResult(succeeded: succeeded, failures: [])
     }
 
     private func makeCandidate(for sourceURL: URL) throws -> RenameCandidate? {
@@ -162,6 +194,46 @@ public struct FileNormalizer {
                 throw error
             }
         }
+    }
+
+    private func rollback(_ candidate: RenameCandidate) throws {
+        let originalPath = candidate.sourceURL.path
+        let parentPath = candidate.sourceURL.deletingLastPathComponent().path
+        let convertedPath = rawChildPath(parentPath: parentPath, leafName: candidate.targetName)
+
+        if pathExists(convertedPath) {
+            if pathExists(originalPath) {
+                guard isSameFilesystemObject(convertedPath, originalPath) else {
+                    throw FileNormalizerError.rollbackDestinationOccupied(originalPath)
+                }
+
+                // On APFS the original NFD spelling can resolve to the same inode as
+                // the current NFC spelling. Force the directory entry back through
+                // an ASCII temporary name so the original bytes are restored.
+                try renameThroughTemporaryPath(
+                    sourcePath: convertedPath,
+                    parentPath: parentPath,
+                    targetPath: originalPath,
+                    targetName: candidate.sourceName
+                )
+            } else {
+                try posixRename(from: convertedPath, to: originalPath)
+                do {
+                    try verifyStoredName(parentPath: parentPath, expectedName: candidate.sourceName)
+                } catch {
+                    try? posixRename(from: originalPath, to: convertedPath)
+                    throw error
+                }
+            }
+            return
+        }
+
+        if pathExists(originalPath) {
+            try verifyStoredName(parentPath: parentPath, expectedName: candidate.sourceName)
+            return
+        }
+
+        throw FileNormalizerError.rollbackSourceMissing(convertedPath)
     }
 
     private func renameThroughTemporaryPath(
@@ -309,6 +381,8 @@ public enum FileNormalizerError: LocalizedError {
     case persistedNameMismatch(String)
     case cannotEnumerate(URL)
     case enumerationFailed(path: String, reason: String)
+    case rollbackDestinationOccupied(String)
+    case rollbackSourceMissing(String)
 
     public var errorDescription: String? {
         switch self {
@@ -320,6 +394,10 @@ public enum FileNormalizerError: LocalizedError {
             return "폴더를 읽을 수 없습니다: \(url.path)"
         case .enumerationFailed(let path, let reason):
             return "폴더 검사 중 오류가 발생했습니다: \(path) (\(reason))"
+        case .rollbackDestinationOccupied(let path):
+            return "원래 이름으로 되돌릴 수 없습니다. 다른 항목이 경로를 사용 중입니다: \(path)"
+        case .rollbackSourceMissing(let path):
+            return "롤백할 변환 결과를 찾을 수 없습니다: \(path)"
         }
     }
 }

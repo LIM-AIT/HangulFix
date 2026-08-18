@@ -81,11 +81,19 @@ public struct RenameFailure: Sendable, Hashable {
 }
 
 public struct RenameExecutionResult: Sendable {
+    /// Items that remain converted when execution returns. This is empty when a
+    /// runtime failure occurs and every earlier rename was rolled back successfully.
     public let succeeded: [RenameCandidate]
     public let failures: [RenameFailure]
+    public let rolledBackCount: Int
 
-    public init(succeeded: [RenameCandidate], failures: [RenameFailure]) {
+    public init(
+        succeeded: [RenameCandidate],
+        failures: [RenameFailure],
+        rolledBackCount: Int = 0
+    ) {
         self.succeeded = succeeded
         self.failures = failures
+        self.rolledBackCount = rolledBackCount
     }
 }

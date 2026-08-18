@@ -13,8 +13,9 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 - 하위 항목부터 안전하게 rename
 - APFS의 normalization-insensitive 동작 대응
 - 변환 후 실제 디렉터리 엔트리가 NFC UTF-8 바이트로 저장됐는지 검증
-- 변환 검증 실패 시 best-effort rollback
+- 런타임 오류 발생 시 이전 변경을 역순으로 자동 rollback
 - 파일 내용은 수정하지 않고 이름만 변경
+- broken symbolic link도 링크 자체의 이름만 안전하게 변환
 - 패키지(`.app` 등) 내부는 기본적으로 재귀 탐색하지 않음
 - 로컬 `.app` 번들 생성
 
@@ -54,7 +55,9 @@ Swift의 `String ==`는 Unicode canonical equivalence를 적용하므로 NFD/NFC
 
 APFS에서는 NFD 경로와 NFC 경로가 같은 파일을 가리킬 수 있습니다. HangulFix는 이런 경우 같은 디렉터리의 ASCII 임시 이름을 거쳐 POSIX `rename()`으로 NFC 이름을 기록합니다.
 
-rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리를 다시 읽어 최종 파일명의 UTF-8 바이트가 정확한 NFC인지 확인하며, 확인에 실패하면 가능한 범위에서 원래 이름으로 되돌립니다.
+rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리를 다시 읽어 최종 파일명의 UTF-8 바이트가 정확한 NFC인지 확인합니다.
+
+배치 실행 전에 충돌을 다시 확인하고, 실행 도중 파일이 사라지거나 권한/파일시스템 오류가 발생하면 이후 항목 처리를 중단합니다. 이미 변환된 항목은 역순으로 원래 이름에 rollback하여 중첩 폴더에서도 가능한 한 부분 변환 상태를 남기지 않습니다. 롤백 자체가 실패한 경우 해당 항목을 실패 목록에 명시적으로 표시합니다.
 
 ## 자동 테스트
 
@@ -67,12 +70,16 @@ GitHub Actions에서 아래를 매 push마다 검증합니다.
 - 이미 NFC인 파일 미변경
 - 중복/겹치는 선택 항목 dedup
 - 64개 파일 일괄 변환
+- 실행 전 blocked 항목이 있으면 전체 미변경
+- 런타임 실패 시 이전 성공 rename 자동 rollback
+- broken symbolic link 이름 변환 및 링크 대상 보존
+- `.app` 패키지 내부 탐색 제외
 - Release build
 - `.app` 번들 생성
 
 ## 개발 상태
 
-현재 버전: **0.2.0 reliability pass**
+현재 버전: **0.3.0 safety pass**
 
 다음 단계:
 

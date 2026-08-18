@@ -102,6 +102,10 @@ final class HangulFixViewModel: ObservableObject {
             if result.failures.isEmpty {
                 lastSuccessCount = result.succeeded.count
                 statusText = "완료: \(result.succeeded.count)개의 이름을 NFC로 변환하고 실제 저장 상태까지 확인했습니다."
+            } else if result.rolledBackCount > 0, result.succeeded.isEmpty {
+                statusText = "변환 중 오류로 작업을 중단했고, 이전 \(result.rolledBackCount)개 변경을 원래 이름으로 되돌렸습니다. 실패 항목을 확인해 주세요."
+            } else if result.rolledBackCount > 0 {
+                statusText = "변환 중 오류로 작업을 중단했습니다. \(result.rolledBackCount)개는 되돌렸지만 \(result.succeeded.count)개는 롤백하지 못했습니다. 실패 항목을 확인해 주세요."
             } else {
                 statusText = "\(result.succeeded.count)개 성공, \(result.failures.count)개 실패했습니다. 실패 항목을 확인한 뒤 다시 선택해 주세요."
             }
