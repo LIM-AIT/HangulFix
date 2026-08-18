@@ -11,7 +11,7 @@ public struct ZipArchiveVerification: Sendable, Equatable {
     }
 }
 
-public struct ZipArchiveService: Sendable {
+public struct ZipArchiveService {
     private let fileManager: FileManager
 
     public init(fileManager: FileManager = .default) {
@@ -19,9 +19,10 @@ public struct ZipArchiveService: Sendable {
     }
 
     /// Creates a Windows-oriented ZIP for one already-normalized file or folder.
-    /// The archive is written to a temporary sibling path first, its central
-    /// directory is verified byte-for-byte, and only then atomically moved to the
-    /// requested destination.
+    /// macOS `ditto` writes UTF-8 filename bytes but does not reliably set ZIP's
+    /// language-encoding flag. HangulFix patches that flag in both local and
+    /// central headers, verifies the archive byte-for-byte, then atomically
+    /// publishes the final ZIP.
     @discardableResult
     public func createVerifiedArchive(
         sourcePath: String,
@@ -31,7 +32,7 @@ public struct ZipArchiveService: Sendable {
             throw ZipArchiveError.sourceMissing(sourcePath)
         }
 
-        try verifySourceTreeIsNFC(sourcePath: sourcePath)
+        let sourceIsDirectory = try verifySourceTreeIsNFC(sourcePath: sourcePath)
 
         let destinationPath = destinationURL.path
         let parentPath = destinationURL.deletingLastPathComponent().path
@@ -47,14 +48,14 @@ public struct ZipArchiveService: Sendable {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = [
-            "-c",
-            "-k",
-            "--norsrc",
-            "--keepParent",
-            sourcePath,
-            temporaryPath
-        ]
+
+        var arguments = ["-c", "-k", "--norsrc"]
+        if sourceIsDirectory {
+            arguments.append("--keepParent")
+        }
+        arguments.append(sourcePath)
+        arguments.append(temporaryPath)
+        process.arguments = arguments
 
         let output = Pipe()
         process.standardOutput = output
@@ -79,6 +80,7 @@ public struct ZipArchiveService: Sendable {
             )
         }
 
+        try markUTF8FilenameFlags(atPath: temporaryPath)
         let verification = try verifyArchive(atPath: temporaryPath)
         try atomicRename(from: temporaryPath, to: destinationPath)
         return verification
@@ -88,7 +90,9 @@ public struct ZipArchiveService: Sendable {
         try verifyArchive(atPath: url.path)
     }
 
-    private func verifySourceTreeIsNFC(sourcePath: String) throws {
+    /// Returns whether the source itself is a directory after validating every
+    /// filename component without following symbolic links.
+    private func verifySourceTreeIsNFC(sourcePath: String) throws -> Bool {
         let sourceName = (sourcePath as NSString).lastPathComponent
         if FileNormalizer.needsNFCNormalization(sourceName) {
             throw ZipArchiveError.sourceContainsNonNFC(sourceName)
@@ -102,8 +106,11 @@ public struct ZipArchiveService: Sendable {
             throw posixError(path: sourcePath)
         }
 
-        guard (info.st_mode & S_IFMT) == S_IFDIR else { return }
-        try verifyDirectoryTreeIsNFC(directoryPath: sourcePath, relativePrefix: "")
+        let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
+        if isDirectory {
+            try verifyDirectoryTreeIsNFC(directoryPath: sourcePath, relativePrefix: "")
+        }
+        return isDirectory
     }
 
     private func verifyDirectoryTreeIsNFC(
@@ -140,7 +147,83 @@ public struct ZipArchiveService: Sendable {
         }
     }
 
+    private func markUTF8FilenameFlags(atPath archivePath: String) throws {
+        let parsed = try parseCentralDirectory(atPath: archivePath)
+        let handle = try FileHandle(forUpdating: URL(fileURLWithPath: archivePath))
+        defer { try? handle.close() }
+
+        for entry in parsed.entries {
+            try validateArchiveEntry(
+                name: entry.name,
+                rawName: entry.rawName,
+                usesUTF8Flag: true,
+                requireUTF8Flag: false
+            )
+
+            let centralFlags = entry.flags | 0x0800
+            try writeUInt16(
+                centralFlags,
+                to: handle,
+                at: parsed.centralOffset + UInt64(entry.centralFlagOffset)
+            )
+
+            let localOffset = UInt64(entry.localHeaderOffset)
+            try handle.seek(toOffset: localOffset)
+            guard let localHeader = try handle.read(upToCount: 30),
+                  localHeader.count == 30,
+                  try readUInt32(localHeader, at: 0) == 0x0403_4B50 else {
+                throw ZipArchiveError.invalidArchive("Local file header가 손상되었습니다: \(entry.name)")
+            }
+
+            let localFlags = try readUInt16(localHeader, at: 6)
+            let localNameLength = Int(try readUInt16(localHeader, at: 26))
+            let localExtraLength = Int(try readUInt16(localHeader, at: 28))
+            guard localNameLength == entry.rawName.count else {
+                throw ZipArchiveError.invalidArchive("Local/Central filename 길이가 다릅니다: \(entry.name)")
+            }
+
+            try handle.seek(toOffset: localOffset + 30)
+            guard let localName = try handle.read(upToCount: localNameLength),
+                  localName.count == localNameLength,
+                  localName == entry.rawName else {
+                throw ZipArchiveError.invalidArchive("Local/Central filename bytes가 다릅니다: \(entry.name)")
+            }
+
+            // Validate that the local extra field is also within the archive before
+            // writing the flag. Its contents do not need modification.
+            let localEnd = localOffset
+                + 30
+                + UInt64(localNameLength)
+                + UInt64(localExtraLength)
+            guard localEnd <= parsed.fileSize else {
+                throw ZipArchiveError.invalidArchive("Local file header 범위가 올바르지 않습니다: \(entry.name)")
+            }
+
+            try writeUInt16(localFlags | 0x0800, to: handle, at: localOffset + 6)
+        }
+
+        try handle.synchronize()
+    }
+
     private func verifyArchive(atPath archivePath: String) throws -> ZipArchiveVerification {
+        let parsed = try parseCentralDirectory(atPath: archivePath)
+        var names: [String] = []
+        names.reserveCapacity(parsed.entries.count)
+
+        for entry in parsed.entries {
+            try validateArchiveEntry(
+                name: entry.name,
+                rawName: entry.rawName,
+                usesUTF8Flag: (entry.flags & 0x0800) != 0,
+                requireUTF8Flag: true
+            )
+            names.append(entry.name)
+        }
+
+        return ZipArchiveVerification(entryCount: names.count, entryNames: names)
+    }
+
+    private func parseCentralDirectory(atPath archivePath: String) throws -> ParsedCentralDirectory {
         guard pathExists(archivePath) else {
             throw ZipArchiveError.archiveMissing(archivePath)
         }
@@ -172,11 +255,18 @@ public struct ZipArchiveService: Sendable {
             throw ZipArchiveError.invalidArchive("ZIP End of Central Directory를 찾지 못했습니다.")
         }
 
-        let entryCount = Int(try readUInt16(tail, at: eocdOffset + 10))
+        let diskNumber = try readUInt16(tail, at: eocdOffset + 4)
+        let centralDisk = try readUInt16(tail, at: eocdOffset + 6)
+        let entriesOnDisk = try readUInt16(tail, at: eocdOffset + 8)
+        let totalEntries = try readUInt16(tail, at: eocdOffset + 10)
         let centralSize32 = try readUInt32(tail, at: eocdOffset + 12)
         let centralOffset32 = try readUInt32(tail, at: eocdOffset + 16)
 
-        guard entryCount != 0xFFFF,
+        guard diskNumber == 0, centralDisk == 0, entriesOnDisk == totalEntries else {
+            throw ZipArchiveError.invalidArchive("분할 ZIP은 지원하지 않습니다.")
+        }
+
+        guard totalEntries != 0xFFFF,
               centralSize32 != 0xFFFF_FFFF,
               centralOffset32 != 0xFFFF_FFFF else {
             throw ZipArchiveError.unsupportedZip64
@@ -198,10 +288,10 @@ public struct ZipArchiveService: Sendable {
         }
 
         var cursor = 0
-        var names: [String] = []
-        names.reserveCapacity(entryCount)
+        var entries: [ParsedCentralEntry] = []
+        entries.reserveCapacity(Int(totalEntries))
 
-        for _ in 0..<entryCount {
+        for _ in 0..<Int(totalEntries) {
             guard cursor + 46 <= central.count,
                   try readUInt32(central, at: cursor) == 0x0201_4B50 else {
                 throw ZipArchiveError.invalidArchive("Central Directory entry가 손상되었습니다.")
@@ -211,6 +301,11 @@ public struct ZipArchiveService: Sendable {
             let nameLength = Int(try readUInt16(central, at: cursor + 28))
             let extraLength = Int(try readUInt16(central, at: cursor + 30))
             let commentLength = Int(try readUInt16(central, at: cursor + 32))
+            let localHeaderOffset = try readUInt32(central, at: cursor + 42)
+            guard localHeaderOffset != 0xFFFF_FFFF else {
+                throw ZipArchiveError.unsupportedZip64
+            }
+
             let nameStart = cursor + 46
             let nameEnd = nameStart + nameLength
             let next = nameEnd + extraLength + commentLength
@@ -224,23 +319,30 @@ public struct ZipArchiveService: Sendable {
                 throw ZipArchiveError.invalidUTF8Entry
             }
 
-            try validateArchiveEntry(
-                name: name,
-                rawName: rawName,
-                usesUTF8Flag: (flags & (1 << 11)) != 0
+            entries.append(
+                ParsedCentralEntry(
+                    name: name,
+                    rawName: rawName,
+                    flags: flags,
+                    centralFlagOffset: cursor + 8,
+                    localHeaderOffset: localHeaderOffset
+                )
             )
-
-            names.append(name)
             cursor = next
         }
 
-        return ZipArchiveVerification(entryCount: names.count, entryNames: names)
+        return ParsedCentralDirectory(
+            fileSize: fileSize,
+            centralOffset: centralOffset,
+            entries: entries
+        )
     }
 
     private func validateArchiveEntry(
         name: String,
         rawName: Data,
-        usesUTF8Flag: Bool
+        usesUTF8Flag: Bool,
+        requireUTF8Flag: Bool
     ) throws {
         guard !name.isEmpty, !name.contains("\0") else {
             throw ZipArchiveError.unsafeEntry(name)
@@ -261,7 +363,7 @@ public struct ZipArchiveService: Sendable {
         }
 
         let containsNonASCII = rawName.contains { $0 >= 0x80 }
-        if containsNonASCII && !usesUTF8Flag {
+        if requireUTF8Flag && containsNonASCII && !usesUTF8Flag {
             throw ZipArchiveError.unmarkedUTF8Entry(name)
         }
     }
@@ -301,6 +403,15 @@ public struct ZipArchiveService: Sendable {
             | (UInt32(data[offset + 3]) << 24)
     }
 
+    private func writeUInt16(_ value: UInt16, to handle: FileHandle, at offset: UInt64) throws {
+        let data = Data([
+            UInt8(value & 0x00FF),
+            UInt8((value >> 8) & 0x00FF)
+        ])
+        try handle.seek(toOffset: offset)
+        try handle.write(contentsOf: data)
+    }
+
     private func rawChildPath(parentPath: String, leafName: String) -> String {
         parentPath == "/" ? "/" + leafName : parentPath + "/" + leafName
     }
@@ -335,6 +446,20 @@ public struct ZipArchiveService: Sendable {
             ]
         )
     }
+}
+
+private struct ParsedCentralDirectory {
+    let fileSize: UInt64
+    let centralOffset: UInt64
+    let entries: [ParsedCentralEntry]
+}
+
+private struct ParsedCentralEntry {
+    let name: String
+    let rawName: Data
+    let flags: UInt16
+    let centralFlagOffset: Int
+    let localHeaderOffset: UInt32
 }
 
 public enum ZipArchiveError: LocalizedError, Equatable {
