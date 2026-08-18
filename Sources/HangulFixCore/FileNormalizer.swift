@@ -413,8 +413,11 @@ public struct FileNormalizer {
         return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 
+    /// Canonically equivalent path spellings can point at the same APFS entry.
+    /// Use an NFC key for de-duplication only; the stored raw path itself is kept
+    /// unchanged for normalization checks and rename execution.
     private func rawPathKey(_ path: String) -> Data {
-        Data(path.utf8)
+        Data(path.precomposedStringWithCanonicalMapping.utf8)
     }
 
     private func deduplicated(_ paths: [String]) -> [String] {
