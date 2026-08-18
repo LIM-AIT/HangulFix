@@ -5,7 +5,7 @@ import XCTest
 final class SelectedFileNormalizationRegressionTests: XCTestCase {
     private let fileManager = FileManager.default
 
-    func testDirectlySelectedNFDFileIsDetectedConvertedAndZipped() throws {
+    func testCanonicalAliasResolvesActualStoredNameThenConvertsAndZips() throws {
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("HangulFixSelectedFileRegression-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -15,16 +15,25 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         let nfd = nfc.decomposedStringWithCanonicalMapping
         XCTAssertFalse(nfd.utf8.elementsEqual(nfc.utf8))
 
-        let sourcePath = rawChildPath(parentPath: root.path, leafName: nfd)
-        try writeExactFile(Data("xlsx-fixture".utf8), to: sourcePath)
+        let nfdPath = rawChildPath(parentPath: root.path, leafName: nfd)
+        let nfcAliasPath = rawChildPath(parentPath: root.path, leafName: nfc)
+        try writeExactFile(Data("xlsx-fixture".utf8), to: nfdPath)
         XCTAssertTrue(try exactNameExists(nfd, in: root))
 
-        // This is the important regression path: the user selects the file itself,
-        // rather than selecting its parent folder and finding it via enumeration.
-        let selectedURL = URL(fileURLWithPath: sourcePath)
-        let normalizer = FileNormalizer()
-        let candidates = try normalizer.scan(urls: [selectedURL])
+        // APFS can resolve an NFC path alias to an entry whose stored bytes are NFD.
+        // This mirrors Finder/NSOpenPanel handing the app a canonically equivalent
+        // URL spelling rather than the exact directory-entry spelling.
+        guard pathExists(nfcAliasPath) else {
+            throw XCTSkip("The test filesystem does not resolve canonical Unicode aliases like APFS.")
+        }
 
+        let selectedAliasURL = URL(fileURLWithPath: nfcAliasPath)
+        let resolvedSelection = try FileSystemEntryResolver.resolve(selectedAliasURL)
+        let resolvedSelectionName = (resolvedSelection.path as NSString).lastPathComponent
+        XCTAssertTrue(resolvedSelectionName.utf8.elementsEqual(nfd.utf8))
+
+        let normalizer = FileNormalizer()
+        let candidates = try normalizer.scan(urls: [resolvedSelection])
         XCTAssertEqual(candidates.count, 1)
         XCTAssertTrue(candidates[0].sourceName.utf8.elementsEqual(nfd.utf8))
         XCTAssertTrue(candidates[0].targetName.utf8.elementsEqual(nfc.utf8))
@@ -35,10 +44,19 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         XCTAssertTrue(try exactNameExists(nfc, in: root))
         XCTAssertFalse(try exactNameExists(nfd, in: root))
 
-        let convertedPath = rawChildPath(parentPath: root.path, leafName: nfc)
+        // The pre-conversion NFD path can still resolve to the same file on APFS.
+        // ZIP must not reject that stale alias after the directory entry is NFC.
+        guard pathExists(nfdPath) else {
+            throw XCTSkip("The test filesystem does not preserve canonical aliases after rename.")
+        }
+
+        let resolvedAfterConversion = try FileSystemEntryResolver.resolvePath(nfdPath)
+        let resolvedAfterName = (resolvedAfterConversion as NSString).lastPathComponent
+        XCTAssertTrue(resolvedAfterName.utf8.elementsEqual(nfc.utf8))
+
         let zipURL = root.appendingPathComponent("attachment.zip")
         let verification = try ZipArchiveService().createVerifiedArchive(
-            sourcePath: convertedPath,
+            sourcePath: resolvedAfterConversion,
             destinationURL: zipURL
         )
 
@@ -55,6 +73,13 @@ final class SelectedFileNormalizationRegressionTests: XCTestCase {
         try fileManager.contentsOfDirectory(atPath: directory.path).contains { name in
             name.utf8.elementsEqual(expectedName.utf8)
         }
+    }
+
+    private func pathExists(_ path: String) -> Bool {
+        var info = stat()
+        return path.withCString { pointer in
+            Darwin.lstat(pointer, &info)
+        } == 0
     }
 
     private func writeExactFile(_ data: Data, to path: String) throws {
