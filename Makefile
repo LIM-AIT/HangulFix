@@ -1,5 +1,7 @@
-.PHONY: build test run icon app install verify package dist-verify dmg notarize e2e-create e2e-check clean
+.PHONY: build test run icon app install verify package dist-verify release-check dmg notarize e2e-create e2e-check clean
 
+VERSION := $(shell tr -d '[:space:]' < VERSION)
+ZIP_PATH := dist/HangulFix-$(VERSION)-macOS.zip
 E2E_DIR ?= $(HOME)/Desktop/HangulFix-E2E-Test
 
 build:
@@ -30,20 +32,23 @@ verify:
 	test -x dist/HangulFix.app/Contents/MacOS/HangulFix
 	test -f dist/HangulFix.app/Contents/Resources/HangulFix.icns
 	@test "$$(( $$(stat -f%z dist/HangulFix.app/Contents/Resources/HangulFix.icns) ))" -gt 1000
-	@test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/HangulFix.app/Contents/Info.plist)" = "0.8.0"
+	@test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/HangulFix.app/Contents/Info.plist)" = "$(VERSION)"
 	@test "$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/HangulFix.app/Contents/Info.plist)" = "HangulFix"
 	@if command -v codesign >/dev/null 2>&1; then \
 		codesign --verify --deep --strict --verbose=2 dist/HangulFix.app; \
 	fi
 
 package: app
-	rm -f dist/HangulFix-macOS.zip dist/HangulFix-macOS.zip.sha256
-	ditto -c -k --sequesterRsrc --keepParent dist/HangulFix.app dist/HangulFix-macOS.zip
-	shasum -a 256 dist/HangulFix-macOS.zip > dist/HangulFix-macOS.zip.sha256
+	rm -f dist/HangulFix-*-macOS.zip dist/HangulFix-*-macOS.zip.sha256
+	ditto -c -k --sequesterRsrc --keepParent dist/HangulFix.app "$(ZIP_PATH)"
+	shasum -a 256 "$(ZIP_PATH)" > "$(ZIP_PATH).sha256"
 	./scripts/create-dmg.sh
 
 dist-verify: package
 	bash scripts/verify-distribution.sh
+
+release-check: verify dist-verify
+	@echo "HangulFix $(VERSION) release verification PASSED"
 
 dmg: app
 	./scripts/create-dmg.sh

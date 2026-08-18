@@ -4,9 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-APP_VERSION="0.8.0"
-BUILD_NUMBER="8"
+APP_VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
+BUILD_NUMBER="${BUILD_NUMBER:-100}"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+
+[[ -n "$APP_VERSION" ]] || { echo "VERSION is empty" >&2; exit 1; }
 
 swift build -c release --product HangulFix
 BIN_DIR="$(swift build -c release --show-bin-path)"

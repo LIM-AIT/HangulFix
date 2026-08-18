@@ -18,28 +18,22 @@ jobs:
       - name: Swift version
         run: swift --version
 
-      - name: Full verification
-        run: make verify
-
       - name: Validate E2E fixture generator
         run: |
           python3 -m py_compile scripts/e2e_fixture.py
           python3 scripts/e2e_fixture.py create "$RUNNER_TEMP/HangulFix-E2E-Test"
 
-      - name: Package app
-        run: make package
+      - name: Final release verification
+        run: make release-check
 
-      - name: Verify distribution artifacts
-        run: bash scripts/verify-distribution.sh
-
-      - name: Upload verified app
+      - name: Upload verified v1 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: HangulFix-macOS
           path: |
-            dist/HangulFix-macOS.zip
-            dist/HangulFix-macOS.zip.sha256
-            dist/HangulFix-macOS.dmg
-            dist/HangulFix-macOS.dmg.sha256
+            dist/HangulFix-*-macOS.zip
+            dist/HangulFix-*-macOS.zip.sha256
+            dist/HangulFix-*-macOS.dmg
+            dist/HangulFix-*-macOS.dmg.sha256
           if-no-files-found: error
           retention-days: 14
