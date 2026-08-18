@@ -6,6 +6,7 @@ macOS에서 생성된 한글 파일/폴더명의 Unicode 정규화 문제를 Win
 
 - 파일 및 폴더 선택
 - Finder Drag & Drop
+- Finder 우클릭 Services에서 선택 항목을 HangulFix로 전달
 - 하위 폴더 재귀 탐색
 - Unicode NFD → NFC 변환
 - 변경 대상 미리보기
@@ -52,9 +53,27 @@ open dist/HangulFix.app
 
 `make app`은 Release 빌드 후 `dist/HangulFix.app`을 생성하고 로컬 사용을 위해 ad-hoc codesign을 적용합니다.
 
+## Finder 우클릭 서비스 설치
+
+Finder에서 파일/폴더를 선택한 뒤 우클릭 Services 메뉴의 **HangulFix로 NFC 변환**을 사용할 수 있습니다.
+
+```bash
+make install
+```
+
+기본 설치 위치는 다음과 같습니다.
+
+```text
+~/Applications/HangulFix.app
+```
+
+서비스를 선택하면 즉시 rename하지 않고 HangulFix 창을 활성화해 선택 항목을 불러오고 기존 미리보기/충돌 검사 과정을 거칩니다. 최종 변환은 앱의 `NFC로 변환` 버튼으로 실행합니다.
+
+macOS의 Services 메뉴 설정에 따라 항목이 숨겨져 있으면 시스템 설정의 키보드 단축키/Services 항목에서 HangulFix 서비스를 활성화한 뒤 Finder를 다시 확인하세요.
+
 ## 전체 로컬 검증
 
-배포 전에 아래 한 명령으로 unit test, Release build, `.app` 생성, 실행 파일 존재 여부, codesign 검증까지 수행합니다.
+배포 전에 아래 한 명령으로 unit test, Release build, `.app` 생성, Finder Service 메타데이터, 실행 파일 존재 여부, codesign 검증까지 수행합니다.
 
 ```bash
 make verify
@@ -123,6 +142,8 @@ rename 성공만으로 완료 처리하지 않습니다. 변환 후 디렉터리
 
 배치 실행 전에 충돌을 다시 확인하고, 실행 도중 파일이 사라지거나 권한/파일시스템 오류가 발생하면 이후 항목 처리를 중단합니다. 이미 변환된 항목은 역순으로 원래 이름에 rollback하여 중첩 폴더에서도 가능한 한 부분 변환 상태를 남기지 않습니다. 롤백 자체가 실패한 경우 해당 항목을 실패 목록에 명시적으로 표시합니다.
 
+Finder Service는 선택 항목을 앱으로 전달하는 진입점만 제공하며, 실제 파일명 변경은 기존 검증 엔진과 동일한 미리보기/충돌 검사/rollback 경로를 거칩니다.
+
 ## 자동 테스트
 
 GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
@@ -140,18 +161,19 @@ GitHub Actions에서 아래를 매 push/PR마다 검증합니다.
 - `.app` 패키지 내부 탐색 제외
 - Release build
 - `.app` 번들 생성 및 codesign 검증
+- Finder Service Info.plist 메타데이터 검증
 - E2E fixture generator 문법 및 생성 검증
 - 검증된 앱 ZIP 및 SHA-256 checksum 생성
 
 ## 개발 상태
 
-현재 버전: **0.3.2 E2E verification pass**
+현재 버전: **0.4.0 Finder Service pass**
 
 다음 단계:
 
-- 실제 Windows/Teams/Outlook/SMB end-to-end 검증
-- Finder 우클릭 Quick Action
+- Finder 우클릭 서비스 실제 사용 E2E 검증
+- ZIP 생성 시 파일명 NFC 보정 및 ZIP entry 검증
 - 변환 실행 취소(Undo)
-- Windows 금지 문자 사전 검사
-- ZIP 생성 시 파일명 NFC 보정
+- Windows 금지 문자/예약 이름 사전 검사
+- 앱 아이콘 및 배포 UX
 - 자동 감시 폴더
