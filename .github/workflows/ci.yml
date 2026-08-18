@@ -29,6 +29,9 @@ jobs:
       - name: Package app
         run: make package
 
+      - name: Verify distribution artifacts
+        run: ./scripts/verify-distribution.sh
+
       - name: Upload verified app
         uses: actions/upload-artifact@v4
         with:
