@@ -45,7 +45,7 @@ final class MicrosoftGraphMailServiceTests: XCTestCase {
         XCTAssertEqual(result.verifiedAttachmentNames.count, 1)
         XCTAssertTrue(result.verifiedAttachmentNames[0].utf8.elementsEqual(fixture.name.utf8))
 
-        let requests = transport.capturedRequests()
+        let requests = await transport.capturedRequests()
         XCTAssertEqual(requests.count, 3)
         XCTAssertEqual(requests[0].httpMethod, "POST")
         XCTAssertEqual(requests[1].httpMethod, "POST")
@@ -105,7 +105,7 @@ final class MicrosoftGraphMailServiceTests: XCTestCase {
             XCTAssertFalse(actual!.utf8.elementsEqual(expected.utf8))
         }
 
-        let requests = transport.capturedRequests()
+        let requests = await transport.capturedRequests()
         XCTAssertEqual(requests.last?.httpMethod, "DELETE")
         XCTAssertTrue(requests.last?.url?.absoluteString.contains("draft-1") == true)
     }
@@ -131,8 +131,8 @@ private struct StaticTokenProvider: MicrosoftAccessTokenProviding {
     func invalidateAccessToken(for configuration: MicrosoftGraphConfiguration) async {}
 }
 
-private final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
-    struct Response {
+private actor ScriptedTransport: HTTPTransport {
+    struct Response: Sendable {
         let status: Int
         let data: Data
         let headers: [String: String]
@@ -150,7 +150,6 @@ private final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
         }
     }
 
-    private let lock = NSLock()
     private var responses: [Response]
     private var requests: [URLRequest] = []
 
@@ -159,14 +158,11 @@ private final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        lock.lock()
         requests.append(request)
         guard !responses.isEmpty else {
-            lock.unlock()
             throw NSError(domain: "ScriptedTransport", code: 1)
         }
         let scripted = responses.removeFirst()
-        lock.unlock()
 
         let response = HTTPURLResponse(
             url: request.url!,
@@ -178,9 +174,7 @@ private final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
     }
 
     func capturedRequests() -> [URLRequest] {
-        lock.lock()
-        defer { lock.unlock() }
-        return requests
+        requests
     }
 }
 
