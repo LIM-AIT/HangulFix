@@ -19,6 +19,10 @@ struct ContentView: View {
                     selectionSummary
                 }
 
+                if !viewModel.windowsCompatibilityIssues.isEmpty {
+                    windowsCompatibilityBanner
+                }
+
                 preview
             }
             .padding(20)
@@ -50,6 +54,7 @@ struct ContentView: View {
                 || viewModel.lastUndoCount > 0
                 || viewModel.lastZipURL != nil
                 || !viewModel.lastFailures.isEmpty
+                || !viewModel.windowsCompatibilityIssues.isEmpty
                 || viewModel.zipErrorText != nil {
                 Button("초기화") {
                     viewModel.clear()
@@ -70,7 +75,7 @@ struct ContentView: View {
             Text("파일 또는 폴더를 여기에 놓으세요")
                 .font(.headline)
 
-            Text("하위 폴더까지 검사하며 파일 내용은 변경하지 않습니다.")
+            Text("하위 폴더까지 NFC와 Windows 파일명 호환성을 검사하며 파일 내용은 변경하지 않습니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -119,6 +124,56 @@ struct ContentView: View {
         }
     }
 
+    private var windowsCompatibilityBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(
+                    "Windows 비호환 파일명 \(viewModel.windowsCompatibilityIssues.count)개",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+                Spacer()
+
+                Text("ZIP 저장 차단")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.14), in: Capsule())
+            }
+
+            Text("NFC 변환은 계속할 수 있지만 아래 이름을 수정하기 전에는 Windows용 ZIP을 만들지 않습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(viewModel.windowsCompatibilityIssues.prefix(3))) { issue in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(issue.name)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(issue.problem.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            if viewModel.windowsCompatibilityIssues.count > 3 {
+                Text("외 \(viewModel.windowsCompatibilityIssues.count - 3)개")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.orange.opacity(0.25))
+        }
+    }
+
     @ViewBuilder
     private var preview: some View {
         if viewModel.isBusy && viewModel.candidates.isEmpty {
@@ -139,7 +194,7 @@ struct ContentView: View {
             ContentUnavailableView(
                 "Windows용 ZIP 생성 완료",
                 systemImage: "archivebox.fill",
-                description: Text("\(zipURL.lastPathComponent) · 내부 \(viewModel.lastZipEntryCount)개 entry의 UTF-8 NFC 파일명을 검증했습니다.")
+                description: Text("\(zipURL.lastPathComponent) · 내부 \(viewModel.lastZipEntryCount)개 entry의 UTF-8 NFC 및 Windows 파일명 규칙을 검증했습니다.")
             )
             .frame(maxHeight: .infinity)
         } else if viewModel.lastUndoCount > 0 {
@@ -152,15 +207,23 @@ struct ContentView: View {
         } else if viewModel.lastSuccessCount > 0 {
             ContentUnavailableView(
                 "변환 완료",
-                systemImage: "checkmark.circle.fill",
-                description: Text("\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장된 것을 확인했습니다. 필요하면 ZIP으로 저장하거나 ⌘Z로 되돌릴 수 있습니다.")
+                systemImage: viewModel.windowsCompatibilityIssues.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                description: Text(
+                    viewModel.windowsCompatibilityIssues.isEmpty
+                        ? "\(viewModel.lastSuccessCount)개의 이름이 NFC로 저장됐고 Windows 파일명 검사도 통과했습니다. 필요하면 ZIP으로 저장하거나 ⌘Z로 되돌릴 수 있습니다."
+                        : "\(viewModel.lastSuccessCount)개의 이름은 NFC로 변환됐지만 위 Windows 호환성 경고를 먼저 해결해야 ZIP으로 저장할 수 있습니다."
+                )
             )
             .frame(maxHeight: .infinity)
         } else if viewModel.candidates.isEmpty {
             ContentUnavailableView(
-                "변환 대상 없음",
-                systemImage: "textformat.abc",
-                description: Text("NFD 형식의 한글 파일/폴더가 발견되면 여기에 표시됩니다. 이미 NFC인 단일 항목은 바로 ZIP으로 저장할 수 있습니다.")
+                viewModel.windowsCompatibilityIssues.isEmpty ? "변환 대상 없음" : "NFC는 정상입니다",
+                systemImage: viewModel.windowsCompatibilityIssues.isEmpty ? "textformat.abc" : "exclamationmark.triangle",
+                description: Text(
+                    viewModel.windowsCompatibilityIssues.isEmpty
+                        ? "NFD 형식의 한글 파일/폴더가 발견되면 여기에 표시됩니다. 이미 NFC인 단일 항목은 바로 ZIP으로 저장할 수 있습니다."
+                        : "NFD 변환 대상은 없지만 Windows에서 사용할 수 없는 파일명이 발견되었습니다. 위 경고를 확인해 주세요."
+                )
             )
             .frame(maxHeight: .infinity)
         } else {
